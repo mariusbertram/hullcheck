@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+server/node_modules
+npm-debug.log
+charts
+deploy
+README.md
+*.md
+.DS_Store

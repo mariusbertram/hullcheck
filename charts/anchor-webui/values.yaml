@@ -1,0 +1,102 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/example/anchor-webui
+  tag: ""       # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+# Works out of the box on both vanilla Kubernetes and OpenShift (restricted
+# SCC assigns a random UID at runtime - the image is built group(0)-writable
+# so it does not depend on runAsUser actually being honored).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop: ["ALL"]
+  readOnlyRootFilesystem: false
+
+# Set to true (together with readOnlyRootFilesystem: true above) if your
+# PodSecurityPolicy/PSA profile requires a read-only root filesystem - the
+# scanners need a writable /tmp for per-scan credentials and staging files.
+extraEmptyDirTmp: false
+
+persistence:
+  # Stores scan history/artifacts (SBOMs, vulnerability & license reports)
+  # and the saved proxy/registry configuration across pod restarts.
+  enabled: true
+  # existingClaim: ""
+  storageClassName: ""
+  accessMode: ReadWriteOnce
+  size: 5Gi
+
+config:
+  httpProxy: ""
+  httpsProxy: ""
+  noProxy: ""
+  maxConcurrency: 2
+  toolTimeoutSeconds: 900
+  maxHistory: 200
+
+# Seed default registry credentials (pull secrets) used by syft/grype/grant.
+# Additional/override credentials can still be managed at runtime from the
+# WebUI Settings page.
+pullSecret:
+  # Name of an existing Secret of type kubernetes.io/dockerconfigjson to
+  # mount read-only, e.g. one already used as an imagePullSecret.
+  existingSecret: ""
+  # Alternatively let the chart create one from an inline .dockerconfigjson
+  # value (prefer existingSecret / a secrets manager in production).
+  create: false
+  dockerconfigjson: ""
+
+# OpenShift Route (used when running on OpenShift instead of ingress).
+route:
+  enabled: false
+  host: ""
+  tls:
+    enabled: true
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # OpenShift: leaving automountServiceAccountToken default is fine, the
+  # app never talks to the Kubernetes API.
+  automount: false
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

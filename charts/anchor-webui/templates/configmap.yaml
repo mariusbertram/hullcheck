@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "anchor-webui.fullname" . }}
+  labels:
+    {{- include "anchor-webui.labels" . | nindent 4 }}
+data:
+  HTTP_PROXY: {{ .Values.config.httpProxy | quote }}
+  HTTPS_PROXY: {{ .Values.config.httpsProxy | quote }}
+  NO_PROXY: {{ .Values.config.noProxy | quote }}
+  MAX_CONCURRENCY: {{ .Values.config.maxConcurrency | quote }}
+  TOOL_TIMEOUT_MS: {{ mulf (.Values.config.toolTimeoutSeconds | float64) 1000 | int | quote }}
+  MAX_HISTORY: {{ .Values.config.maxHistory | quote }}
+  DATA_DIR: "/data"
+  PULL_SECRET_PATH: "/etc/anchor-webui/pull-secret/.dockerconfigjson"

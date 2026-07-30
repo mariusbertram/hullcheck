@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: anchor-webui
+  namespace: anchor-webui
+data:
+  HTTP_PROXY: ""
+  HTTPS_PROXY: ""
+  NO_PROXY: ""
+  MAX_CONCURRENCY: "2"
+  TOOL_TIMEOUT_MS: "900000"
+  MAX_HISTORY: "200"
+  DATA_DIR: "/data"
+  PULL_SECRET_PATH: "/etc/anchor-webui/pull-secret/.dockerconfigjson"

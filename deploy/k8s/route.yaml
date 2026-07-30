@@ -1,0 +1,17 @@
+# OpenShift only. Apply instead of ingress.yaml.
+# No auth is enforced by the app - consider leaving this Route internal
+# (or protect it with a NetworkPolicy) rather than exposing it publicly.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: anchor-webui
+  namespace: anchor-webui
+spec:
+  to:
+    kind: Service
+    name: anchor-webui
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

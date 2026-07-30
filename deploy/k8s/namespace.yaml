@@ -1,0 +1,5 @@
+# Optional - create/select your own namespace instead if you prefer.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: anchor-webui

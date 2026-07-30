@@ -1,0 +1,15 @@
+apiVersion: v2
+name: anchor-webui
+description: WebUI to scan container images / OCI artifacts with Anchore syft, grype and grant
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - anchore
+  - syft
+  - grype
+  - grant
+  - sbom
+  - vulnerability-scanning
+  - security
+home: https://oss.anchore.com/docs/projects/

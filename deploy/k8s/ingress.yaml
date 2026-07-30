@@ -1,0 +1,23 @@
+# Vanilla Kubernetes only. Apply instead of route.yaml.
+# No auth is enforced by the app - restrict this to a trusted network
+# (private ingress class, allowlist annotations, or a NetworkPolicy).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: anchor-webui
+  namespace: anchor-webui
+  # annotations:
+  #   nginx.ingress.kubernetes.io/whitelist-source-range: 10.0.0.0/8
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: anchor-webui.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: anchor-webui
+                port:
+                  number: 8080

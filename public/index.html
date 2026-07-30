@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Anchor WebUI &mdash; syft / grype / grant</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>&#x2693;&#xfe0f;</text></svg>" />
+<link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">&#9875; Anchor WebUI</div>
+  <nav class="tabs">
+    <button class="tab-btn active" data-view="scan">Scan</button>
+    <button class="tab-btn" data-view="history">History</button>
+    <button class="tab-btn" data-view="settings">Settings</button>
+  </nav>
+</header>
+
+<main>
+  <!-- SCAN VIEW -->
+  <section id="view-scan" class="view active">
+    <form id="scan-form" class="card">
+      <h2>Scan an image or OCI artifact</h2>
+      <label>
+        Image reference
+        <input id="image-input" type="text" placeholder="registry.example.com/namespace/image:tag" required autocomplete="off" />
+      </label>
+
+      <details id="advanced-details">
+        <summary>Advanced (one-off registry credentials / TLS)</summary>
+        <div class="grid">
+          <label>Registry host<input id="adv-authority" type="text" placeholder="registry.example.com" /></label>
+          <label>Username<input id="adv-username" type="text" autocomplete="off" /></label>
+          <label>Password / token<input id="adv-password" type="password" autocomplete="off" /></label>
+          <label class="checkbox"><input id="adv-insecure-tls" type="checkbox" /> Skip TLS verification</label>
+          <label class="checkbox"><input id="adv-insecure-http" type="checkbox" /> Use plain HTTP</label>
+        </div>
+      </details>
+
+      <button type="submit" id="scan-submit">Scan with syft + grype + grant</button>
+      <p class="hint">Default registry credentials and proxy settings are taken from <a href="#" data-goto="settings">Settings</a>.</p>
+    </form>
+
+    <div id="scan-result" class="card hidden">
+      <div class="result-header">
+        <div>
+          <h2 id="result-image"></h2>
+          <span id="result-status" class="badge"></span>
+        </div>
+        <div id="tool-badges" class="tool-badges"></div>
+      </div>
+
+      <div class="result-tabs">
+        <button class="rtab-btn active" data-rtab="log">Live log</button>
+        <button class="rtab-btn" data-rtab="vulns">Vulnerabilities (grype)</button>
+        <button class="rtab-btn" data-rtab="sbom">SBOM (syft)</button>
+        <button class="rtab-btn" data-rtab="licenses">Licenses (grant)</button>
+      </div>
+
+      <div id="rtab-log" class="rtab active"><pre id="log-output" class="log"></pre></div>
+      <div id="rtab-vulns" class="rtab"></div>
+      <div id="rtab-sbom" class="rtab"></div>
+      <div id="rtab-licenses" class="rtab"></div>
+    </div>
+  </section>
+
+  <!-- HISTORY VIEW -->
+  <section id="view-history" class="view">
+    <div class="card">
+      <h2>Scan history</h2>
+      <table class="history-table">
+        <thead>
+          <tr><th>Image</th><th>Status</th><th>Started</th><th>Critical</th><th>High</th><th>Packages</th></tr>
+        </thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SETTINGS VIEW -->
+  <section id="view-settings" class="view">
+    <form id="settings-form" class="card">
+      <h2>Default configuration</h2>
+      <p class="hint">Applies to every scan unless overridden per-scan under &ldquo;Advanced&rdquo;. Stored on the server (no authentication is enforced on this UI &mdash; protect network access at the cluster level, e.g. via NetworkPolicy or an internal-only Route).</p>
+
+      <h3>HTTP proxy</h3>
+      <div class="grid">
+        <label>HTTP_PROXY<input id="cfg-http-proxy" type="text" placeholder="http://proxy.example.com:3128" /></label>
+        <label>HTTPS_PROXY<input id="cfg-https-proxy" type="text" placeholder="http://proxy.example.com:3128" /></label>
+        <label>NO_PROXY<input id="cfg-no-proxy" type="text" placeholder="localhost,127.0.0.1,.svc,.cluster.local" /></label>
+      </div>
+
+      <h3>TLS</h3>
+      <div class="grid">
+        <label class="checkbox"><input id="cfg-insecure-tls" type="checkbox" /> Skip TLS verification for all registries by default</label>
+        <label class="checkbox"><input id="cfg-insecure-http" type="checkbox" /> Use plain HTTP for all registries by default</label>
+      </div>
+
+      <h3>Registry credentials / pull secrets</h3>
+      <table class="auth-table">
+        <thead><tr><th>Registry host</th><th>Username</th><th>Password / token</th><th>Source</th><th></th></tr></thead>
+        <tbody id="auth-body"></tbody>
+      </table>
+      <button type="button" id="add-auth-row">+ Add registry credential</button>
+
+      <div class="actions">
+        <button type="submit">Save configuration</button>
+        <span id="settings-saved" class="hint hidden">Saved.</span>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

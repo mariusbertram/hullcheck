@@ -1,0 +1,17 @@
+{
+  "name": "anchor-webui-server",
+  "version": "1.0.0",
+  "description": "WebUI backend that runs Anchore syft, grype and grant scans against container images / OCI artifacts",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
