@@ -41,6 +41,27 @@ docker compose up --build
 open http://localhost:8080
 ```
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push/PR:
+
+- **test** — `npm test` (Node's built-in test runner) against the backend:
+  image-reference validation, config load/save/masking (incl. a mounted
+  pull-secret fixture), the grype/syft/grant summary parsers, and the HTTP
+  API end-to-end (config, scan creation/validation, history, artifacts,
+  static frontend fallback).
+- **dockerfile-lint** — hadolint against the `Dockerfile`.
+- **manifests-lint** — `helm lint` + `helm template` the chart under a few
+  different value combinations (route, ingress, persistence off,
+  read-only-root-fs), and `kubectl kustomize deploy/k8s`.
+- **docker-build-test** — builds the real container image, starts it,
+  confirms `syft`/`grype`/`grant` are installed and runnable, then drives an
+  actual scan of `alpine:3.20` through the HTTP API and asserts all three
+  tools report `success` and produce valid SBOM/vulnerability/license JSON.
+- **publish** — on push to `main` or a `v*` tag (after everything above is
+  green), builds `linux/amd64` + `linux/arm64` and pushes to
+  `ghcr.io/<owner>/<repo>`.
+
 ## Configuration
 
 Two layers, both editable from the **Settings** page in the UI:

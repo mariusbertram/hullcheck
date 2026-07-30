@@ -3,10 +3,10 @@
 const express = require('express');
 const fs = require('fs');
 const jobs = require('../jobs');
+const { isValidImageRef } = require('../validate');
 
 const router = express.Router();
 
-const IMAGE_RE = /^[A-Za-z0-9][A-Za-z0-9._\-/:@]{0,510}$/;
 const ARTIFACT_FILES = new Set(['sbom.json', 'grype.json', 'grant.json']);
 
 router.get('/', (req, res) => {
@@ -16,7 +16,7 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const body = req.body || {};
   const image = String(body.image || '').trim();
-  if (!image || !IMAGE_RE.test(image)) {
+  if (!isValidImageRef(image)) {
     res.status(400).json({ error: 'A valid image / OCI artifact reference is required, e.g. registry.example.com/namespace/image:tag' });
     return;
   }
