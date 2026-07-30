@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # ---- install node dependencies -------------------------------------------
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 COPY server/package.json ./
 RUN npm install --omit=dev
 
 # ---- final image: node runtime + syft/grype/grant CLIs -------------------
-FROM node:20-alpine
+FROM node:24-alpine
 
 # Pin specific tool versions for reproducible builds, e.g.
 #   docker build --build-arg SYFT_VERSION=v1.18.1 ...
