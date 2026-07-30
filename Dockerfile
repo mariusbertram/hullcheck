@@ -16,6 +16,11 @@ ARG SYFT_VERSION=""
 ARG GRYPE_VERSION=""
 ARG GRANT_VERSION=""
 
+# Alpine's default shell is ash (busybox); set pipefail explicitly so a
+# failed `curl` in the install pipelines below fails the build instead of
+# being silently swallowed by `sh`.
+SHELL ["/bin/ash", "-o", "pipefail", "-c"]
+
 RUN apk add --no-cache ca-certificates tzdata curl \
   && curl -sSfL https://get.anchore.io/syft | sh -s -- -b /usr/local/bin ${SYFT_VERSION:+-v $SYFT_VERSION} \
   && curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin ${GRYPE_VERSION:+-v $GRYPE_VERSION} \

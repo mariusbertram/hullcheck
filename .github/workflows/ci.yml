@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
+    tags: ["v*"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
@@ -80,7 +81,7 @@ jobs:
             --set ingress.enabled=true \
             --set ingress.host=anchor-webui.example.com \
             --set pullSecret.create=true \
-            --set pullSecret.dockerconfigjson='{"auths":{}}' > /dev/null
+            --set-json 'pullSecret.dockerconfigjson="{\"auths\":{}}"' > /dev/null
 
       - name: kustomize build deploy/k8s
         run: kubectl kustomize deploy/k8s > /dev/null
