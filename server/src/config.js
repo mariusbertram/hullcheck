@@ -5,8 +5,13 @@ const path = require('path');
 
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
-// Optional mounted kubernetes.io/dockerconfigjson secret (read-only base credentials).
-const MOUNTED_PULL_SECRET = process.env.PULL_SECRET_PATH || '/etc/anchor-webui/pull-secret/.dockerconfigjson';
+// Optional mounted kubernetes.io/dockerconfigjson secret (read-only base
+// credentials). Read lazily (not cached at module load) so it reflects the
+// current env var - relevant for tests, harmless in production where it's
+// set once at container start.
+function mountedPullSecretPath() {
+  return process.env.PULL_SECRET_PATH || '/etc/anchor-webui/pull-secret/.dockerconfigjson';
+}
 
 const DEFAULT_CONFIG = {
   httpProxy: process.env.HTTP_PROXY || process.env.http_proxy || '',
@@ -15,7 +20,7 @@ const DEFAULT_CONFIG = {
   insecureSkipTlsVerify: false,
   insecureUseHttp: false,
   // user-managed registry credentials, in addition to whatever is mounted
-  // from a kubernetes.io/dockerconfigjson secret (see MOUNTED_PULL_SECRET).
+  // from a kubernetes.io/dockerconfigjson secret (see mountedPullSecretPath()).
   registryAuths: []
 };
 
@@ -59,7 +64,7 @@ function save(config) {
 // e.g. an imagePullSecret shared with the cluster. Treated as read-only
 // defaults layered underneath anything configured in the UI.
 function loadMountedPullSecretAuths() {
-  const raw = readJsonSafe(MOUNTED_PULL_SECRET);
+  const raw = readJsonSafe(mountedPullSecretPath());
   if (!raw || !raw.auths) return [];
   const out = [];
   for (const [authority, entry] of Object.entries(raw.auths)) {

@@ -196,4 +196,4 @@ async function runScan(job, perScanAuth) {
 
 jobs.setRunner(runScan);
 
-module.exports = { runScan };
+module.exports = { runScan, summarizeGrype, summarizeSyft, summarizeGrant };
