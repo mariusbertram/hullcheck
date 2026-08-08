@@ -68,6 +68,10 @@ type ArtifactInfo struct {
 	Tag        string `json:"tag"`
 }
 
+// scannerName is the Harbor scanner adapter's advertised name, reused in
+// both the metadata endpoint and the vulnerability report's scanner block.
+const scannerName = "Anchor"
+
 type Handler struct {
 	jobsMgr *jobs.Manager
 }
@@ -79,7 +83,7 @@ func NewHandler(jobsMgr *jobs.Manager) *Handler {
 func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 	meta := Metadata{
 		Scanner: ScannerInfo{
-			Name:    "Anchor",
+			Name:    scannerName,
 			Vendor:  "Anchor WebUI",
 			Version: "v1.0.0",
 		},
@@ -174,7 +178,7 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 	_ = json.Unmarshal(data, &grypeDoc)
 
 	highestSev := severityUnknown
-	sevOrder := map[string]int{"Critical": 5, "High": 4, "Medium": 3, "Low": 2, "Negligible": 1, severityUnknown: 0}
+	sevOrder := map[string]int{severityCritical: 5, severityHigh: 4, severityMedium: 3, severityLow: 2, severityNegligible: 1, severityUnknown: 0}
 
 	vulns := make([]VulnerabilityItem, 0, len(grypeDoc.Matches))
 	for _, m := range grypeDoc.Matches {
@@ -204,7 +208,7 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 				Repository: job.Image,
 			},
 			Scanner: ScannerInfo{
-				Name:    "Anchor",
+				Name:    scannerName,
 				Vendor:  "Anchor WebUI",
 				Version: "v1.0.0",
 			},
@@ -218,22 +222,27 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 }
 
 const severityUnknown = "Unknown"
+const severityCritical = "Critical"
+const severityHigh = "High"
+const severityMedium = "Medium"
+const severityLow = "Low"
+const severityNegligible = "Negligible"
 
 func capitalize(s string) string {
 	if len(s) == 0 {
 		return severityUnknown
 	}
 	switch s {
-	case "critical", "Critical":
-		return "Critical"
-	case "high", "High":
-		return "High"
-	case "medium", "Medium":
-		return "Medium"
-	case "low", "Low":
-		return "Low"
-	case "negligible", "Negligible":
-		return "Negligible"
+	case "critical", severityCritical:
+		return severityCritical
+	case "high", severityHigh:
+		return severityHigh
+	case "medium", severityMedium:
+		return severityMedium
+	case "low", severityLow:
+		return severityLow
+	case "negligible", severityNegligible:
+		return severityNegligible
 	default:
 		return severityUnknown
 	}

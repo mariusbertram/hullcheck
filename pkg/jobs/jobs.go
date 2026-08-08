@@ -20,6 +20,12 @@ const maxLogLines = 4000
 // same but is set independently per tool).
 const jobStatusFailed = "failed"
 
+// toolStatusPending is a ToolStatus's initial state before a tool starts running.
+const toolStatusPending = "pending"
+
+// eventTypeStatus identifies a Broadcast Event carrying a Job status snapshot.
+const eventTypeStatus = "status"
+
 func envInt(name string, def int) int {
 	if v := os.Getenv(name); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -213,7 +219,7 @@ func (m *Manager) executeJobSafely(workerID int, item QueueItem) {
 			}
 			m.mu.Unlock()
 			if exists {
-				m.Broadcast(item.JobID, Event{Type: "status", Data: clone})
+				m.Broadcast(item.JobID, Event{Type: eventTypeStatus, Data: clone})
 				m.Broadcast(item.JobID, Event{Type: "done", Data: clone})
 			}
 		}
@@ -237,7 +243,7 @@ func (m *Manager) executeJob(item QueueItem) {
 	m.mu.Unlock()
 
 	log.Printf("jobs: scan %s started (image=%s)", job.ID, job.Image)
-	m.Broadcast(job.ID, Event{Type: "status", Data: startClone})
+	m.Broadcast(job.ID, Event{Type: eventTypeStatus, Data: startClone})
 
 	if m.runner != nil {
 		m.runner(job, item.RegistryAuth)
@@ -263,7 +269,7 @@ func (m *Manager) executeJob(item QueueItem) {
 		log.Printf("jobs: scan %s completed (image=%s)", job.ID, job.Image)
 	}
 
-	m.Broadcast(job.ID, Event{Type: "status", Data: doneClone})
+	m.Broadcast(job.ID, Event{Type: eventTypeStatus, Data: doneClone})
 	m.Broadcast(job.ID, Event{Type: "done", Data: doneClone})
 }
 
@@ -287,9 +293,9 @@ func (m *Manager) CreateJob(image string, regAuth map[string]string, insecureTLS
 			InsecureUseHTTP:       insecureHTTP,
 		},
 		Tools: map[string]*ToolStatus{
-			"syft":  {Status: "pending"},
-			"grype": {Status: "pending"},
-			"grant": {Status: "pending"},
+			"syft":  {Status: toolStatusPending},
+			"grype": {Status: toolStatusPending},
+			"grant": {Status: toolStatusPending},
 		},
 		Summary: &Summary{},
 		Logs:    []LogEntry{},
@@ -383,7 +389,7 @@ func (m *Manager) SetToolStatus(id, tool, status string, exitCode *int) {
 	clone := cloneJob(job)
 	m.mu.Unlock()
 
-	m.Broadcast(id, Event{Type: "status", Data: clone})
+	m.Broadcast(id, Event{Type: eventTypeStatus, Data: clone})
 }
 
 // SetError records a fatal error for a job. Runners must call this instead
@@ -401,7 +407,7 @@ func (m *Manager) SetError(id, msg string) {
 	clone := cloneJob(job)
 	m.mu.Unlock()
 
-	m.Broadcast(id, Event{Type: "status", Data: clone})
+	m.Broadcast(id, Event{Type: eventTypeStatus, Data: clone})
 }
 
 func (m *Manager) SetSummary(id string, updateFn func(s *Summary)) {
@@ -419,7 +425,7 @@ func (m *Manager) SetSummary(id string, updateFn func(s *Summary)) {
 	clone := cloneJob(job)
 	m.mu.Unlock()
 
-	m.Broadcast(id, Event{Type: "status", Data: clone})
+	m.Broadcast(id, Event{Type: eventTypeStatus, Data: clone})
 }
 
 func (m *Manager) AppendLog(id, tool, stream, text string) {

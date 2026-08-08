@@ -30,7 +30,7 @@ func TestHarborMetadata(t *testing.T) {
 		t.Fatalf("failed to decode json: %v", err)
 	}
 
-	if meta.Scanner.Name != "Anchor" {
+	if meta.Scanner.Name != scannerName {
 		t.Errorf("expected scanner name 'Anchor', got '%s'", meta.Scanner.Name)
 	}
 }
