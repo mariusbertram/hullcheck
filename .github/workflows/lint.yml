@@ -1,0 +1,31 @@
+name: Lint
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.4
+          args: --timeout=5m

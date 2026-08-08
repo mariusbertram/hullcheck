@@ -1,0 +1,199 @@
+name: Release
+
+# Triggered when a version tag (v*) is pushed. Builds and pushes the
+# multi-arch image, generates an SBOM and attests it to the image via
+# keyless (OIDC) cosign, scans for vulnerabilities (a Critical finding
+# blocks the release), and creates a GitHub Release with a changelog and
+# the image digest.
+#
+# Unlike ci.yml (which runs on every push/PR and never pushes anything),
+# this is the only workflow that publishes a real, signed image.
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+# Deny all permissions by default; each job grants only what it needs.
+permissions: {}
+
+jobs:
+  # ── 1. Tests ──────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    uses: ./.github/workflows/lint.yml
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+  # ── 2. Build, push, sign & scan the image ──────────────────────────────────
+  build:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write        # cosign keyless (OIDC) SBOM attestation
+      security-events: write # upload Grype SARIF to the Security tab
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Keyless (OIDC) signing/attestation — no signing key to manage or leak.
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=anchor-webui
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push image (multi-arch)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # fail-build defaults to true here (unlike ci.yml's report-only scan of
+      # the CI-only image): a Critical-severity finding blocks the release.
+      - name: SBOM + vulnerability scan + attestation
+        uses: ./.github/actions/sbom-scan-attest
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          artifact-name: anchor-webui
+          sarif-category: anchor-webui-image
+
+  # ── 3. GitHub Release ─────────────────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          for arch in amd64 arm64; do
+            out="anchor-webui_${VERSION}_linux_${arch}"
+            GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build \
+              -ldflags="-s -w" \
+              -o "dist/${out}" .
+            tar -C dist -czf "dist/${out}.tar.gz" "${out}"
+            rm "dist/${out}"
+          done
+          (cd dist && sha256sum *.tar.gz > checksums.txt)
+
+      - name: Generate changelog (commits since last tag)
+        id: changelog
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            LOG=$(git log --oneline "${PREV_TAG}..HEAD" | head -50)
+          else
+            LOG=$(git log --oneline HEAD | head -50)
+          fi
+          {
+            echo "log<<EOF"
+            echo "$LOG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "anchor-webui ${{ github.ref_name }}"
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          body: |
+            ## anchor-webui ${{ github.ref_name }}
+
+            ### Container image (multi-arch: linux/amd64, linux/arm64)
+
+            | Tag | Digest |
+            |-----|--------|
+            | `${{ env.IMAGE_NAME }}:${{ github.ref_name }}` | `${{ needs.build.outputs.digest }}` |
+
+            SBOM (SPDX) and vulnerability scan results are attested to the
+            image via cosign — verify with:
+            ```
+            cosign verify-attestation --type spdxjson \
+              --certificate-identity-regexp 'https://github.com/${{ github.repository }}/.*' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              ${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+            ```
+
+            ### Release binaries
+
+            - `anchor-webui` binaries for `linux/amd64` and `linux/arm64` are attached to this release.
+            - Verify downloads with `checksums.txt`.
+
+            ### Changes
+
+            ${{ steps.changelog.outputs.log }}
+
+            ### Installation
+
+            See the [README](README.md#deploying-to-kubernetes--openshift) for full installation instructions.

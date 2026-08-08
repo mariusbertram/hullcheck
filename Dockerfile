@@ -1,47 +1,28 @@
 # syntax=docker/dockerfile:1
 
-# ---- install node dependencies -------------------------------------------
-FROM node:24-alpine AS deps
+# ---- Stage 1: Build Go Backend -------------------------------------------
+FROM golang:1.24-alpine AS builder
 WORKDIR /app
-COPY server/package.json ./
-RUN npm install --omit=dev
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o anchor main.go
 
-# ---- final image: node runtime + syft/grype/grant CLIs -------------------
-FROM node:24-alpine
+# ---- Stage 2: Final minimal image -----------------------------------------
+# syft/grype/grant run in-process via their Go libraries (see pkg/scanner) -
+# no CLI binaries to install, so this only needs CA certs (registry/DB TLS)
+# and tzdata.
+FROM alpine:3.20
 
-# Pin specific tool versions for reproducible builds, e.g.
-#   docker build --build-arg SYFT_VERSION=v1.18.1 ...
-# Leave empty to install the latest release at build time.
-ARG SYFT_VERSION=""
-ARG GRYPE_VERSION=""
-ARG GRANT_VERSION=""
-
-# Alpine's default shell is ash (busybox); set pipefail explicitly so a
-# failed `curl` in the install pipelines below fails the build instead of
-# being silently swallowed by `sh`.
-SHELL ["/bin/ash", "-o", "pipefail", "-c"]
-
-RUN apk add --no-cache ca-certificates tzdata curl \
-  && curl -sSfL https://get.anchore.io/syft | sh -s -- -b /usr/local/bin ${SYFT_VERSION:+-v $SYFT_VERSION} \
-  && curl -sSfL https://get.anchore.io/grype | sh -s -- -b /usr/local/bin ${GRYPE_VERSION:+-v $GRYPE_VERSION} \
-  && curl -sSfL https://get.anchore.io/grant | sh -s -- -b /usr/local/bin ${GRANT_VERSION:+-v $GRANT_VERSION} \
-  && apk del curl \
-  && syft version && grype version && grant version
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY server/package.json ./
-COPY server/src ./src
-COPY public ./public
+COPY --from=builder /app/anchor ./anchor
 
-ENV NODE_ENV=production \
-    PORT=8080 \
+ENV PORT=8080 \
     DATA_DIR=/data \
     HOME=/data
 
-# Support running as an arbitrary, non-root UID (OpenShift restricted SCC):
-# everything the app needs to write to is group-owned by root (gid 0) and
-# group-writable, regardless of which UID the platform assigns at runtime.
 RUN mkdir -p /data \
   && chgrp -R 0 /app /data \
   && chmod -R g=u /app /data
@@ -50,6 +31,6 @@ EXPOSE 8080
 USER 1001:0
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["node", "-e", "require('http').get('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
+  CMD ["wget", "-qO-", "http://127.0.0.1:8080/healthz"] || exit 1
 
-CMD ["node", "src/index.js"]
+CMD ["/app/anchor"]

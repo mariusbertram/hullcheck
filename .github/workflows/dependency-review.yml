@@ -1,0 +1,26 @@
+# Dependency Review Action
+#
+# Scans go.mod/go.sum changes in a pull request for known-vulnerable
+# dependency versions and license issues, commenting a summary on the PR.
+#
+# Source repository: https://github.com/actions/dependency-review-action
+# Public documentation: https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/about-dependency-review
+name: Dependency review
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions: {}
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # for comment-summary-in-pr
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4
+        with:
+          comment-summary-in-pr: always
