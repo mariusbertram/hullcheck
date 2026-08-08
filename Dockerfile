@@ -33,9 +33,19 @@ RUN mkdir -p /build/data \
 # in-process via their Go libraries (see pkg/scanner), so nothing besides
 # the static binary and the CA bundle is required.
 # The `static` image only ships a rolling `:latest` tag (no semver), so it's
-# pinned by digest for reproducible builds; bump by re-resolving
-# `podman pull quay.io/hummingbird/static:latest && podman inspect ... digest`.
-FROM quay.io/hummingbird/static:latest@sha256:d379f017d18a5a0505655030166aa39312739d3bc32079bc37e884bb702bf8ab
+# pinned by digest for reproducible builds. This MUST be the multi-arch
+# manifest LIST digest, not a single-platform image digest - `docker
+# pull`/`podman pull` + `inspect` on a local machine resolves to *that
+# machine's* platform-specific manifest, which breaks multi-platform buildx
+# builds (InvalidBaseImagePlatform: pulled with platform "arm64", expected
+# "amd64" - exactly what pinning the arm64 digest here caused). Get the
+# correct digest with:
+#   docker buildx imagetools inspect quay.io/hummingbird/static:latest
+# (its top-level "Digest:" line - the "Manifests:" sub-entries below it are
+# the per-platform ones to avoid), or without Docker:
+#   skopeo inspect --raw docker://quay.io/hummingbird/static:latest \
+#     | sha256sum # must match the registry's Docker-Content-Digest header
+FROM quay.io/hummingbird/static:latest@sha256:e6e00bcc3803b2faf7de0b08af2e1b21b155da6c891e153caafd99999c083ee1
 WORKDIR /app
 
 COPY --from=builder --chown=1001:0 /build/anchor ./anchor
