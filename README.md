@@ -70,23 +70,32 @@ open http://localhost:8080
 
 ## CI
 
+All static-analysis/lint checks live in the reusable `.github/workflows/lint.yml`
+(three jobs: `golangci-lint`, `dockerfile-lint`, `manifests-lint`) - it's
+called from both `ci.yml` and `release.yml` rather than duplicated into each.
+
 `.github/workflows/ci.yml` runs on PRs/pushes to `main` when app/chart/CI files changed:
 
-- **lint** — `golangci-lint` (via reusable `.github/workflows/lint.yml`).
+- **lint** — calls `lint.yml`: `golangci-lint`; hadolint against the
+  `Dockerfile`; `helm lint` + `helm template` the chart under a few
+  different value combinations (route, ingress, persistence off,
+  read-only-root-fs), and `kubectl kustomize deploy/k8s`.
 - **test** — `go vet ./...` + `go build ./...` + `go test -race -shuffle=on ./...` against the backend:
   image-reference validation, the grype/syft/grant summary parsers, the
   Harbor scanner adapter (metadata/accept-scan), and the job queue.
-- **dockerfile-lint** — hadolint against the `Dockerfile`.
-- **manifests-lint** — `helm lint` + `helm template` the chart under a few
-  different value combinations (route, ingress, persistence off,
-  read-only-root-fs), and `kubectl kustomize deploy/k8s`.
-- **docker-build-test** — builds the real container image, starts it, waits
-  for `/readyz` (the vulnerability database finishing its download), then
-  drives an actual scan of `alpine:3.20` through the HTTP API and asserts
-  all three tool states report `success` and produce valid
-  SBOM/vulnerability/license JSON.
-- **release/publish** lives in `.github/workflows/release.yml` and only runs
-  on `v*` tags (build/push/sign/attest + GitHub release binaries).
+- **docker-build-test** — needs `[lint, test]`; builds the real container
+  image, starts it, waits for `/readyz` (the vulnerability database
+  finishing its download), then drives an actual scan of `alpine:3.20`
+  through the HTTP API and asserts all three tool states report `success`
+  and produce valid SBOM/vulnerability/license JSON; also runs a
+  report-only SBOM + vulnerability scan of that image (Security tab, not
+  blocking).
+
+**Release** lives in `.github/workflows/release.yml` and only runs on `v*`
+tags: `lint` + `test`, then builds/pushes the real multi-arch image, attests
+an SBOM to it and blocks on a Critical vulnerability finding (keyless
+cosign), and creates a GitHub Release with a changelog, the image digest,
+and standalone `linux/amd64`/`linux/arm64` binaries + checksums.
 
 ## Configuration
 

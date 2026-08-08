@@ -1,5 +1,9 @@
 name: Lint
 
+# All static-analysis/lint checks live here as a reusable workflow, called
+# from both ci.yml (every push/PR) and release.yml (every v* tag) - one
+# place to add a new lint rather than duplicating it into both callers.
+
 on:
   workflow_call:
   workflow_dispatch:
@@ -11,7 +15,7 @@ concurrency:
 permissions: {}
 
 jobs:
-  lint:
+  golangci-lint:
     name: golangci-lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -29,3 +33,55 @@ jobs:
         with:
           version: v2.12.2
           args: --timeout=10m
+
+  dockerfile-lint:
+    name: Lint Dockerfile
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hadolint/hadolint-action@v3.4.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+  manifests-lint:
+    name: Lint Helm chart & kustomize manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: azure/setup-helm@v5
+        with:
+          version: "v3.21.3"
+
+      - name: helm lint
+        run: helm lint charts/anchor-webui
+
+      - name: helm template (default values)
+        run: helm template anchor-webui charts/anchor-webui > /dev/null
+
+      - name: helm template (route + persistence disabled)
+        run: |
+          helm template anchor-webui charts/anchor-webui \
+            --set route.enabled=true \
+            --set route.host=anchor-webui.apps.example.com \
+            --set persistence.enabled=false \
+            --set extraEmptyDirTmp=true \
+            --set securityContext.readOnlyRootFilesystem=true > /dev/null
+
+      - name: helm template (ingress + created pull secret)
+        run: |
+          helm template anchor-webui charts/anchor-webui \
+            --set ingress.enabled=true \
+            --set ingress.host=anchor-webui.example.com \
+            --set pullSecret.create=true \
+            --set-json 'pullSecret.dockerconfigjson="{\"auths\":{}}"' > /dev/null
+
+      - name: kustomize build deploy/k8s
+        run: kubectl kustomize deploy/k8s > /dev/null
