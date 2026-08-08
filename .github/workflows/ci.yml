@@ -44,6 +44,8 @@ permissions: {}
 jobs:
   lint:
     uses: ./.github/workflows/lint.yml
+    permissions:
+      contents: read
 
   test:
     name: Backend unit tests
