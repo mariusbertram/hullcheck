@@ -1,13 +1,12 @@
 name: SBOM + vulnerability scan + attestation
 description: >
   Generates an SPDX SBOM with Syft, scans the image for vulnerabilities with
-  Grype (failing only on Critical severity; all severities are uploaded to
-  the GitHub Security tab as SARIF — visible there only for scans of the
-  default branch or a pull request; a tag-triggered run's findings are only
-  in the job log, per GitHub's code scanning ref model), and, when attest is
-  true, attests the SBOM to the image via keyless (OIDC) cosign. Requires the
-  calling job to grant security-events: write (for the SARIF upload) and,
-  when attest is true, id-token: write (for cosign) plus already being
+  Grype (failing only on Critical severity; findings are printed as a
+  human-readable table directly in the job log - no GitHub Security tab
+  upload, since that requires GitHub Advanced Security, which this repo
+  doesn't have purchased), and, when attest is true, attests the SBOM to the
+  image via keyless (OIDC) cosign. Requires the calling job to grant, when
+  attest is true, id-token: write (for cosign) plus already being
   authenticated to the image's registry (e.g. docker/login-action) with
   sigstore/cosign-installer having already run.
 
@@ -24,9 +23,6 @@ inputs:
   artifact-name:
     description: Short slug identifying the image, used to name the SBOM file.
     required: true
-  sarif-category:
-    description: Unique category for the SARIF upload, so results from different images don't overwrite each other in the Security tab.
-    required: true
   attest:
     description: >
       Whether to attest the SBOM to image-ref via keyless cosign. Set false
@@ -40,7 +36,7 @@ inputs:
       Whether a Critical-severity finding fails this step (and therefore the
       job, absent continue-on-error at the call site). Keep true for release
       gating; set false for report-only scanning (e.g. PR-time CI, where the
-      goal is Security-tab visibility rather than blocking merges on a
+      goal is job-log visibility rather than blocking merges on a
       vulnerability that may take time to triage or may have no fix yet).
     required: false
     default: "true"
@@ -56,43 +52,18 @@ runs:
         output-file: sbom-${{ inputs.artifact-name }}.spdx.json
         upload-artifact: false
 
-    # Human-readable findings in the job log itself — output-format: sarif
-    # below writes only a SARIF file (uploaded to the Security tab, not
-    # printed), so without this a failure here is otherwise only
-    # diagnosable by re-running the scan or reading the Security tab.
-    # Never fails the job itself; the step below is what enforces the gate.
-    - name: Scan for vulnerabilities (Grype, human-readable log)
-      continue-on-error: true
-      uses: anchore/scan-action@v7
-      with:
-        image: ${{ inputs.image-ref }}
-        fail-build: false
-        output-format: table
-        grype-version: v0.116.1
-
+    # table output prints findings straight to the job log, so this single
+    # scan doubles as both the visible report and (via fail-build) the gate
+    # - no need for a second SARIF-format run just to feed an upload step
+    # that can't work on this repo anyway (see the action description).
     - name: Scan for vulnerabilities (Grype)
-      id: scan
       uses: anchore/scan-action@v7
       with:
         image: ${{ inputs.image-ref }}
         fail-build: ${{ inputs.fail-build }}
         severity-cutoff: critical
-        output-format: sarif
+        output-format: table
         grype-version: v0.116.1
-
-    # Runs even if the scan step above failed the build on a Critical
-    # finding, so those findings still show up in the Security tab.
-    # continue-on-error: the Security tab / code scanning requires GitHub
-    # Advanced Security, which isn't enabled on every private repo; findings
-    # remain visible in the job log (human-readable step above) and in the
-    # SBOM/SARIF artifacts regardless, so this must never fail the pipeline.
-    - name: Upload vulnerability scan results
-      if: always()
-      continue-on-error: true
-      uses: github/codeql-action/upload-sarif@v4
-      with:
-        sarif_file: ${{ steps.scan.outputs.sarif }}
-        category: ${{ inputs.sarif-category }}
 
     - name: Attest SBOM to image (keyless cosign)
       if: inputs.attest == 'true'

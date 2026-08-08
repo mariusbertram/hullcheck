@@ -88,8 +88,9 @@ called from both `ci.yml` and `release.yml` rather than duplicated into each.
   finishing its download), then drives an actual scan of `alpine:3.20`
   through the HTTP API and asserts all three tool states report `success`
   and produce valid SBOM/vulnerability/license JSON; also runs a
-  report-only SBOM + vulnerability scan of that image (Security tab, not
-  blocking).
+  report-only SBOM + vulnerability scan of that image (findings printed to
+  the job log, not blocking - no GitHub Security tab upload since that
+  needs GitHub Advanced Security, which this repo doesn't have purchased).
 
 **Release** lives in `.github/workflows/release.yml` and only runs on `v*`
 tags: `lint` + `test`, then builds/pushes the real multi-arch image, attests

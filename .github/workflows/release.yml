@@ -60,8 +60,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write        # cosign keyless (OIDC) SBOM attestation
-      security-events: write # upload Grype SARIF to the Security tab
+      id-token: write # cosign keyless (OIDC) SBOM attestation
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
@@ -114,7 +113,6 @@ jobs:
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           artifact-name: anchor-webui
-          sarif-category: anchor-webui-image
 
   # ── 3. GitHub Release ─────────────────────────────────────────────────────
   github-release:
