@@ -79,7 +79,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Keyless (OIDC) signing/attestation — no signing key to manage or leak.
-      - uses: sigstore/cosign-installer@v4
+      # No floating major-version tag (unlike most actions) - only exact
+      # vX.Y.Z releases exist, so this must be pinned to a real one.
+      - uses: sigstore/cosign-installer@v4.1.2
 
       - uses: docker/metadata-action@v6
         id: meta
