@@ -63,7 +63,7 @@ runs:
     # Never fails the job itself; the step below is what enforces the gate.
     - name: Scan for vulnerabilities (Grype, human-readable log)
       continue-on-error: true
-      uses: anchore/scan-action@v6
+      uses: anchore/scan-action@v7
       with:
         image: ${{ inputs.image-ref }}
         fail-build: false
@@ -72,7 +72,7 @@ runs:
 
     - name: Scan for vulnerabilities (Grype)
       id: scan
-      uses: anchore/scan-action@v6
+      uses: anchore/scan-action@v7
       with:
         image: ${{ inputs.image-ref }}
         fail-build: ${{ inputs.fail-build }}

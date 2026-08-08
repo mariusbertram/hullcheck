@@ -21,6 +21,6 @@ jobs:
       pull-requests: write # for comment-summary-in-pr
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           comment-summary-in-pr: always

@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -82,10 +82,6 @@ jobs:
         with:
           dockerfile: Dockerfile
           failure-threshold: warning
-          # DL3018: pin apk package versions - we intentionally track latest
-          # ca-certificates/tzdata (syft/grype run in-process, not as apk
-          # packages, so their versions are pinned via go.mod instead).
-          ignore: DL3018
 
   manifests-lint:
     name: Lint Helm chart & kustomize manifests
@@ -146,8 +142,8 @@ jobs:
           push: false
           load: true
           tags: anchor-webui:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,mode=max,scope=ci
 
       - name: Start container
         run: |
