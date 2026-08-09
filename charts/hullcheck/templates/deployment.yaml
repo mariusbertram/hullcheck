@@ -51,6 +51,10 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "hullcheck.fullname" . }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           lifecycle:
             preStop:
               # Give kube-proxy/ingress time to remove this pod from

@@ -223,8 +223,27 @@ real pull secret from `deploy/k8s/pull-secret-example.yaml` if you need one
 
 ## Air-gapped / offline deployment
 
-Two features need network egress beyond the registry being scanned; both are
-safe to leave off (the defaults) in a cluster with no outbound access:
+Building the image itself needs network access too - `go mod download` (see
+`Dockerfile`) fetches every Go module from `proxy.golang.org` by default. If
+your build environment's egress is restricted, or another team runs an
+internal Go-proxy repository (e.g. Nexus) you're expected to build through,
+point the build at it instead:
+
+```
+docker build --build-arg GOPROXY=https://nexus.internal/repository/go-proxy .
+```
+
+Falls back to `,direct` (a plain VCS fetch) for anything that mirror
+doesn't have, so it doesn't need to carry every possible dependency. If that
+Nexus repository doesn't also proxy `sum.golang.org`, module checksum
+verification against it will fail - either have the team that runs it add
+that (safer), or add `--build-arg GOPROXY=...` together with
+`--build-arg GOSUMDB=off` (also wired into the Dockerfile as a build arg)
+at your own risk.
+
+Two more features need network egress beyond the registry being scanned at
+*runtime*; both are safe to leave off (the defaults) in a cluster with no
+outbound access:
 
 - **grype vulnerability database** (required for CVE matching): downloaded
   once at startup into `DATA_DIR/grype-db` and reused across restarts. For
@@ -256,6 +275,30 @@ safe to leave off (the defaults) in a cluster with no outbound access:
   timeout. Only enable it once you've confirmed egress to the proxy actually
   works; it adds real time either way (tens of seconds for a few hundred
   unique modules, since each is a separate proxy round-trip).
+
+  This is a separate `GOPROXY` from the build-time one above - that one only
+  controls fetching *this repo's own* dependencies while compiling the
+  `hullcheck` binary (`docker build --build-arg GOPROXY=...`). This one is
+  read by syft *inside the running container* at scan time, straight from
+  its process environment, to fetch license metadata for modules found
+  *in the images being scanned*. If your cluster's egress only allows the
+  same internal Nexus Go-proxy, set both as plain container env vars
+  alongside `GOLANG_SEARCH_REMOTE_LICENSES=true`:
+  - Helm: `values.yaml`'s `extraEnv` -
+    ```yaml
+    extraEnv:
+      - name: GOLANG_SEARCH_REMOTE_LICENSES
+        value: "true"
+      - name: GOPROXY
+        value: https://nexus.internal/repository/go-proxy
+    ```
+  - Plain manifests: add both keys directly to `deploy/k8s/configmap.yaml`'s
+    `data:` map.
+
+  Same checksum caveat as the build-time proxy: if that Nexus repository
+  doesn't also mirror `sum.golang.org`, also set `GOSUMDB=off` (same
+  `extraEnv`/ConfigMap mechanism as above), or (safer) have the team running
+  it add that mirror.
 
 ## Security notes
 

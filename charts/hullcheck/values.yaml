@@ -89,6 +89,17 @@ config:
   toolTimeoutSeconds: 900
   maxHistory: 200
 
+# Extra container env vars beyond the fixed set above (standard
+# name/value or name/valueFrom entries). Mainly for syft's own runtime env,
+# e.g. GOLANG_SEARCH_REMOTE_LICENSES plus a GOPROXY pointed at an internal
+# Go-proxy mirror (see README's "Air-gapped / offline deployment"):
+#   extraEnv:
+#     - name: GOLANG_SEARCH_REMOTE_LICENSES
+#       value: "true"
+#     - name: GOPROXY
+#       value: https://nexus.internal/repository/go-proxy
+extraEnv: []
+
 # Seed default registry credentials (pull secrets) used by syft/grype/grant.
 # Additional/override credentials can still be managed at runtime from the
 # WebUI Settings page.

@@ -22,6 +22,21 @@ WORKDIR /build
 # fails with permission denied; point HOME/GOCACHE at a writable directory.
 ENV HOME=/build GOCACHE=/build/.cache/go-build
 
+# Optional: point Go module downloads at an internal proxy (e.g. a company
+# Nexus Go-proxy repository) instead of the public proxy.golang.org -
+# useful behind restricted egress, or to build via a company-managed
+# mirror/cache. Falls back to ",direct" so any module the mirror doesn't
+# have is still fetched straight from its VCS. Override at build time:
+#   docker build --build-arg GOPROXY=https://nexus.internal/repository/go-proxy .
+# If that Nexus repo doesn't also mirror sum.golang.org, checksum
+# verification against modules it serves will fail - either set
+#   --build-arg GOSUMDB=off
+# or (safer) configure Nexus's Go-proxy to proxy sum.golang.org too.
+ARG GOPROXY=https://proxy.golang.org,direct
+ARG GOSUMDB=sum.golang.org
+ENV GOPROXY=$GOPROXY
+ENV GOSUMDB=$GOSUMDB
+
 COPY --chown=1001:0 go.mod go.sum ./
 RUN go mod download
 COPY --chown=1001:0 . .
