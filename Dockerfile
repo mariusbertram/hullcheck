@@ -5,7 +5,16 @@
 # full Go toolchain plus a shell for RUN steps (https://hummingbird-project.io).
 # The distroless runtime image in stage 2 has neither, so all filesystem prep
 # (mkdir, chmod) that the runtime needs must happen here and be COPYed over.
-FROM quay.io/hummingbird/go:1.26-builder AS builder
+#
+# --platform=$BUILDPLATFORM pins this stage to the build host's own
+# architecture (e.g. amd64 GitHub runner) regardless of which platform is
+# being targeted below - Go's own cross-compiler (GOOS/GOARCH) then produces
+# the target binary natively, with zero emulation. Without this, buildx runs
+# the *entire* stage - go mod download plus compiling the whole syft/grype
+# dependency tree - under QEMU for the non-native target, which is 10-50x+
+# slower for CPU-bound work like this: a linux/arm64 release build measured
+# this way ran past a 1-hour job timeout and got killed before finishing.
+FROM --platform=$BUILDPLATFORM quay.io/hummingbird/go:1.26-builder AS builder
 USER 1001
 WORKDIR /build
 
@@ -16,7 +25,12 @@ ENV HOME=/build GOCACHE=/build/.cache/go-build
 COPY --chown=1001:0 go.mod go.sum ./
 RUN go mod download
 COPY --chown=1001:0 . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o anchor main.go
+
+# TARGETOS/TARGETARCH are set automatically by buildx to the platform being
+# built (e.g. linux/arm64), independent of this stage's own native platform.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-w -s" -o anchor main.go
 
 # Prepare the writable data directory with OpenShift-style arbitrary-UID
 # permissions (GID 0, group=owner); the distroless runtime has no shell to
