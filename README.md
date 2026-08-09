@@ -125,9 +125,10 @@ defaults are configured outside the UI:
 Other env vars: `PORT` (8080), `DATA_DIR` (`/data`), `MAX_CONCURRENCY` (2
 parallel scans), `TOOL_TIMEOUT_MS` (900000, applies to each of syft/grype),
 `MAX_HISTORY` (200 scans kept), `GRYPE_DB_AUTO_UPDATE` (`true`),
-`GOLANG_SEARCH_REMOTE_LICENSES` (`false`) — see
-[Air-gapped / offline deployment](#air-gapped--offline-deployment) below for
-what the last two control and why they default the way they do.
+`GOLANG_SEARCH_REMOTE_LICENSES` (`true`), `VEX_LOOKUP_ENABLED` (`true`) — see
+[Air-gapped / offline deployment](#air-gapped--offline-deployment) and
+[VEX attestations](#vex-attestations) below for what these control and why
+they default the way they do.
 
 Credentials are never written to environment variables, files, or disk at
 all. Each scan builds its own in-process `image.RegistryOptions` (mounted
@@ -141,8 +142,8 @@ per-job directory to create or clean up.
 ### Build & push the image
 
 ```
-docker build -t <your-registry>/hullcheck:0.3.0 .
-docker push <your-registry>/hullcheck:0.3.0
+docker build -t <your-registry>/hullcheck:0.4.0 .
+docker push <your-registry>/hullcheck:0.4.0
 ```
 
 syft/grype are linked into the binary as Go libraries (see `go.mod`), so
@@ -155,7 +156,7 @@ rebuild — there are no separate `--build-arg`s or CLI installs to manage.
 ```
 helm install hullcheck charts/hullcheck \
   --set image.repository=<your-registry>/hullcheck \
-  --set image.tag=0.3.0 \
+  --set image.tag=0.4.0 \
   --set route.enabled=true            # OpenShift
   # --set ingress.enabled=true --set ingress.host=hullcheck.example.com   # vanilla k8s
 ```
@@ -261,40 +262,48 @@ outbound access:
   auto-update just skips the (bounded, ~30s) network check outright once
   you've pre-seeded the DB.
 - **Go module license lookup** (`GOLANG_SEARCH_REMOTE_LICENSES`, default
-  `false`): compiled Go binaries embed almost no license metadata on their
+  `true`): compiled Go binaries embed almost no license metadata on their
   own (just module name+version via `debug/buildinfo`), so syft's own
   license catalogers find close to nothing for Go-heavy images unless this
-  is turned on, which makes it fetch each module's license from a Go proxy
-  (respects `GOPROXY`/`GONOPROXY`/`GOPRIVATE` from the environment same as
-  the `go` CLI). This is opt-in rather than defaulted on because syft's
-  remote-license fetch (as of syft v1.50.0) uses a bare `http.Get` with no
-  request timeout and doesn't honor cancellation from the scan's own
-  `TOOL_TIMEOUT_MS` context — on a network that silently drops packets
-  instead of actively refusing them (common with restrictive
-  `NetworkPolicy`/firewall setups, not just fully air-gapped ones), a scan
-  of a Go-heavy image could hang far longer than the configured tool
-  timeout. Only enable it once you've confirmed egress to the proxy actually
-  works; it adds real time either way (tens of seconds for a few hundred
-  unique modules, since each is a separate proxy round-trip).
+  fetches each module's license from a Go proxy (respects
+  `GOPROXY`/`GONOPROXY`/`GOPRIVATE` from the environment same as the `go`
+  CLI). It's on by default so Go-heavy images get real license data out of
+  the box; **air-gapped or network-restricted clusters must either point
+  `GOPROXY` at a reachable proxy (see below) or set
+  `GOLANG_SEARCH_REMOTE_LICENSES=false` to disable it outright.** This
+  matters more than a typical opt-in flag: syft's remote-license fetch (as
+  of syft v1.50.0) uses a bare `http.Get` with no request timeout and
+  doesn't honor cancellation from the scan's own `TOOL_TIMEOUT_MS` context —
+  on a network that silently drops packets instead of actively refusing
+  them (common with restrictive `NetworkPolicy`/firewall setups, not just
+  fully air-gapped ones), a scan of a Go-heavy image can hang far longer
+  than the configured tool timeout. If you haven't confirmed egress to a Go
+  proxy works, disable it. It also adds real time even when it works (tens
+  of seconds for a few hundred unique modules, since each is a separate
+  proxy round-trip).
 
   This is a separate `GOPROXY` from the build-time one above - that one only
   controls fetching *this repo's own* dependencies while compiling the
   `hullcheck` binary (`docker build --build-arg GOPROXY=...`). This one is
   read by syft *inside the running container* at scan time, straight from
   its process environment, to fetch license metadata for modules found
-  *in the images being scanned*. If your cluster's egress only allows the
-  same internal Nexus Go-proxy, set both as plain container env vars
-  alongside `GOLANG_SEARCH_REMOTE_LICENSES=true`:
+  *in the images being scanned*. If your cluster's egress only allows an
+  internal Nexus Go-proxy, point `GOPROXY` at it as a plain container env
+  var (leave `GOLANG_SEARCH_REMOTE_LICENSES` at its default `true`):
   - Helm: `values.yaml`'s `extraEnv` -
     ```yaml
     extraEnv:
-      - name: GOLANG_SEARCH_REMOTE_LICENSES
-        value: "true"
       - name: GOPROXY
         value: https://nexus.internal/repository/go-proxy
     ```
-  - Plain manifests: add both keys directly to `deploy/k8s/configmap.yaml`'s
+  - Plain manifests: add the key directly to `deploy/k8s/configmap.yaml`'s
     `data:` map.
+  - Fully air-gapped, no Go proxy reachable at all:
+    ```yaml
+    extraEnv:
+      - name: GOLANG_SEARCH_REMOTE_LICENSES
+        value: "false"
+    ```
 
   Same checksum caveat as the build-time proxy: if that Nexus repository
   doesn't also mirror `sum.golang.org`, also set `GOSUMDB=off` (same
@@ -346,6 +355,54 @@ Services → Scanners (endpoint URL: `http://<service>:8080`).
 | `POST` | `/api/v1/scan` | Harbor submits an artifact to scan; returns a scan request `id` |
 | `GET` | `/api/v1/scan/{id}/report` | report content-negotiated via `Accept`: the `grype` vulnerability report, or (`Accept: application/vnd.security.sbom.report+json`) the SPDX SBOM, both from the same scan |
 
+## VEX attestations
+
+Every scan checks the registry for an [OpenVEX](https://openvex.dev/)
+attestation attached to the scanned image and, if one is found, feeds it into
+grype's matching (`grype.VulnerabilityMatcher.VexProcessor`) so
+vendor-declared `not_affected`/`fixed` statuses suppress the corresponding
+findings — the same effect `grype --vex <file>` has on the CLI, just
+discovered automatically instead of requiring the file locally.
+
+Discovery follows the convention [cosign](https://github.com/sigstore/cosign)
+uses for attestations (SBOM/provenance/VEX alike): a tag named
+`sha256-<image-digest>.att` in the same repository, holding an OCI manifest
+whose layers are DSSE-enveloped [in-toto](https://in-toto.io/) statements.
+Each layer's statement is decoded and kept only if its `predicateType` is
+`https://openvex.dev/ns` (other predicates on the same tag, e.g. an SBOM
+attestation, are skipped) **and** its `subject` digest matches the digest of
+the image actually being scanned. The extracted OpenVEX document is written
+to a temp file for grype's `vex.Processor` and removed once the scan
+finishes. None of this touches a second registry beyond the one already
+configured for the scan (same credentials, same `insecureUseHttp`/TLS
+settings) — see `pkg/scanner/vex.go`.
+
+**No signature verification is performed.** The DSSE envelope carries a
+cosign signature and a Rekor transparency-log bundle, but this code doesn't
+check either — only that the attestation's declared subject digest matches
+the image, not who produced it. In practice this means **anyone able to push
+tags to the scanned repository can suppress vulnerability findings** by
+pushing their own `.att` tag with fabricated `not_affected` statements.
+Verifying the signature would need a trust policy (which signer
+identities/OIDC issuers are acceptable) that isn't configured anywhere in
+hullcheck today; treat this the way you'd treat any other unauthenticated
+input to the scan (see [Security notes](#security-notes)) and don't rely on
+it in a threat model where the registry itself isn't trusted.
+
+Controlled by `VEX_LOOKUP_ENABLED` (default `true`); set it to `false` to
+disable VEX discovery entirely (e.g. if unsigned VEX attestations
+influencing scan results is unacceptable for your environment, or the
+registry doesn't support attestations and you'd rather skip the extra
+manifest lookup). CSAF-format VEX documents aren't recognized yet — only
+OpenVEX's `predicateType` convention is matched.
+
+This also changes what the [Harbor Pluggable Scanner Adapter](#harbor-pluggable-scanner-adapter)
+reports: `GetReport`'s vulnerability report is built from the same
+VEX-filtered `grype.json`, so an artifact Harbor previously failed on a
+Critical/High severity gate can start passing once its image carries a VEX
+attestation marking those findings `not_affected` — with the same
+no-signature-verification caveat above.
+
 ## Known limitations
 
 - License data ("grant" in the UI/API) is derived directly from syft's SBOM
@@ -374,6 +431,10 @@ Services → Scanners (endpoint URL: `http://<service>:8080`).
   separate "pull the image again directly for grype" fallback, since grype
   matches against the SBOM syft already built rather than pulling the image
   itself.
+- VEX attestation discovery (see [VEX attestations](#vex-attestations))
+  applies unsigned OpenVEX documents to matching results without verifying
+  who published them - any principal with push access to the scanned
+  repository can suppress findings this way.
 - The vulnerability database downloads on first startup (cached under
   `DATA_DIR/grype-db` after that) — scans submitted before `/readyz` reports
   ready will wait for it, up to `TOOL_TIMEOUT_MS`.

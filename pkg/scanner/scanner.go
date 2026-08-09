@@ -30,6 +30,7 @@ import (
 	"github.com/anchore/grype/grype/matcher"
 	grypepkg "github.com/anchore/grype/grype/pkg"
 	"github.com/anchore/grype/grype/presenter/models"
+	"github.com/anchore/grype/grype/vex"
 	"github.com/anchore/grype/grype/vulnerability"
 
 	"github.com/github/go-spdx/v2/spdxexp"
@@ -59,8 +60,22 @@ type Runner struct {
 
 	// golangSearchRemoteLicenses enables syft's golang cataloger fetching
 	// module licenses from a Go proxy (compiled Go binaries otherwise carry
-	// almost no license metadata at all - see runSyft's doc comment).
+	// almost no license metadata at all - see runSyft's doc comment). On by
+	// default; air-gapped deployments with no reachable Go proxy should set
+	// GOLANG_SEARCH_REMOTE_LICENSES=false (and/or point GOPROXY at an
+	// internal Nexus mirror instead of disabling it outright).
 	golangSearchRemoteLicenses bool
+
+	// vexLookupEnabled controls whether each scan checks the registry for an
+	// attached OpenVEX attestation (see vex.go) and, if found, feeds it into
+	// grype's matching so vulnerabilities the vendor has marked
+	// not_affected/fixed get suppressed. On by default - it's a bounded,
+	// best-effort lookup against the same registry/credentials already used
+	// for the scan, and failures never fail the scan. Disable
+	// (VEX_LOOKUP_ENABLED=false) if you don't want unsigned VEX attestations
+	// (no signature verification is performed - see README's Known
+	// Limitations) to be able to influence scan results at all.
+	vexLookupEnabled bool
 
 	dbReady  chan struct{} // closed once a DB load attempt (success or failure) completes
 	dbErr    string        // only written before dbReady is closed - safe to read after
@@ -76,7 +91,8 @@ func NewRunner(cfgMgr *config.Manager, jobsMgr *jobs.Manager, dataDir string) *R
 			toolTimeout = time.Duration(ms) * time.Millisecond
 		}
 	}
-	golangSearchRemoteLicenses := envBool("GOLANG_SEARCH_REMOTE_LICENSES", false)
+	golangSearchRemoteLicenses := envBool("GOLANG_SEARCH_REMOTE_LICENSES", true)
+	vexLookupEnabled := envBool("VEX_LOOKUP_ENABLED", true)
 	dbAutoUpdate := envBool("GRYPE_DB_AUTO_UPDATE", true)
 
 	r := &Runner{
@@ -84,12 +100,13 @@ func NewRunner(cfgMgr *config.Manager, jobsMgr *jobs.Manager, dataDir string) *R
 		jobsMgr:                    jobsMgr,
 		toolTimeout:                toolTimeout,
 		golangSearchRemoteLicenses: golangSearchRemoteLicenses,
+		vexLookupEnabled:           vexLookupEnabled,
 		dbReady:                    make(chan struct{}),
 	}
 
 	jobsMgr.SetRunner(r.RunScan)
-	log.Printf("scanner: runner ready (toolTimeout=%s, golangSearchRemoteLicenses=%t), loading vulnerability database in background (autoUpdate=%t)",
-		toolTimeout, golangSearchRemoteLicenses, dbAutoUpdate)
+	log.Printf("scanner: runner ready (toolTimeout=%s, golangSearchRemoteLicenses=%t, vexLookupEnabled=%t), loading vulnerability database in background (autoUpdate=%t)",
+		toolTimeout, golangSearchRemoteLicenses, vexLookupEnabled, dbAutoUpdate)
 	go r.loadVulnerabilityDB(dataDir, dbAutoUpdate)
 	return r
 }
@@ -173,8 +190,22 @@ func (r *Runner) RunScan(job *jobs.Job, regAuth map[string]string) {
 	grypePath := r.jobsMgr.ArtifactPath(job.ID, "grype.json")
 	grantPath := r.jobsMgr.ArtifactPath(job.ID, "grant.json")
 
+	// Kicked off in parallel with syft below: VEX discovery only needs
+	// job.Image + registryOpts, not the SBOM, and is a separate registry
+	// round-trip worth overlapping with the (typically much longer) image
+	// pull+catalog.
+	vexCh := make(chan vexFetchResult, 1)
+	if r.vexLookupEnabled {
+		go func() { vexCh <- r.runVEXLookup(ctx, job, job.Image, registryOpts) }()
+	} else {
+		vexCh <- vexFetchResult{}
+	}
+
 	sbomObj, sbomJSON, syftOk := r.runSyft(ctx, job, registryOpts, sbomPath, sbomSpdxPath)
 	if !syftOk {
+		if vexRes := <-vexCh; vexRes.cleanup != nil {
+			vexRes.cleanup()
+		}
 		r.jobsMgr.SetError(job.ID, "syft failed to build an SBOM - check the logs and image reference / registry credentials.")
 		return
 	}
@@ -191,7 +222,11 @@ func (r *Runner) RunScan(job *jobs.Job, regAuth map[string]string) {
 
 	go func() {
 		defer wg.Done()
-		grypeOk = r.runGrype(ctx, job, sbomJSON, grypePath)
+		vexRes := <-vexCh
+		if vexRes.cleanup != nil {
+			defer vexRes.cleanup()
+		}
+		grypeOk = r.runGrype(ctx, job, sbomJSON, grypePath, vexRes.paths)
 		if grypeOk {
 			if grypeSum := r.summarizeGrype(grypePath); grypeSum != nil {
 				r.jobsMgr.SetSummary(job.ID, func(s *jobs.Summary) {
@@ -252,12 +287,14 @@ func (r *Runner) runSyft(ctx context.Context, job *jobs.Job, regOpts image.Regis
 	if r.golangSearchRemoteLicenses {
 		// Compiled Go binaries carry almost no license metadata by default
 		// (only module name+version via debug/buildinfo) - fetching from a
-		// Go proxy is the only way syft finds real license data for them.
-		// NOTE: syft's remote license fetch uses a bare http.Get with no
-		// request timeout and doesn't honor toolCtx, so this is opt-in only
-		// (GOLANG_SEARCH_REMOTE_LICENSES=true) - on a network that silently
-		// drops packets rather than refusing them, it can hang far longer
-		// than TOOL_TIMEOUT_MS. Leave it off for air-gapped clusters.
+		// Go proxy is the only way syft finds real license data for them, so
+		// this is on by default. NOTE: syft's remote license fetch uses a
+		// bare http.Get with no request timeout and doesn't honor toolCtx -
+		// on a network that silently drops packets rather than refusing
+		// them, it can hang far longer than TOOL_TIMEOUT_MS. Air-gapped
+		// clusters with no reachable Go proxy should set
+		// GOLANG_SEARCH_REMOTE_LICENSES=false (or point GOPROXY at an
+		// internal Nexus mirror, per the README's air-gapped section).
 		r.jobsMgr.AppendLog(job.ID, tool, "info", "fetching go module licenses from the configured Go proxy")
 		sbomConfig = sbomConfig.WithPackagesConfig(
 			pkgcataloging.DefaultConfig().WithGolangConfig(
@@ -303,8 +340,11 @@ func (r *Runner) runSyft(ctx context.Context, job *jobs.Job, regOpts image.Regis
 
 // runGrype matches the already-built SBOM against grype's vulnerability
 // database in-process (grype.VulnerabilityMatcher), writing the same JSON
-// shape the `grype` CLI would.
-func (r *Runner) runGrype(ctx context.Context, job *jobs.Job, sbomJSON []byte, outFile string) bool {
+// shape the `grype` CLI would. vexDocs (from fetchVEXDocuments, if any were
+// found attached to the image) are applied via grype's own vex.Processor,
+// which moves not_affected/fixed matches into the ignored list automatically
+// as part of FindMatchesContext below.
+func (r *Runner) runGrype(ctx context.Context, job *jobs.Job, sbomJSON []byte, outFile string, vexDocs []string) bool {
 	tool := "grype"
 	r.jobsMgr.SetToolStatus(job.ID, tool, "running", nil)
 
@@ -331,6 +371,14 @@ func (r *Runner) runGrype(ctx context.Context, job *jobs.Job, sbomJSON []byte, o
 	vulnMatcher := grype.VulnerabilityMatcher{
 		VulnerabilityProvider: r.vulnProv,
 		Matchers:              r.matchers,
+	}
+	if len(vexDocs) > 0 {
+		vexProc, err := vex.NewProcessor(vex.ProcessorOptions{Documents: vexDocs})
+		if err != nil {
+			r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("VEX processor init failed, continuing without VEX: %v", err))
+		} else {
+			vulnMatcher.VexProcessor = vexProc
+		}
 	}
 
 	matches, ignoredMatches, err := vulnMatcher.FindMatchesContext(toolCtx, packages, pkgContext)

@@ -9,6 +9,7 @@ require (
 	github.com/anchore/stereoscope v0.3.0
 	github.com/anchore/syft v1.50.0
 	github.com/github/go-spdx/v2 v2.7.0
+	github.com/google/go-containerregistry v0.21.7
 	github.com/google/uuid v1.6.0
 )
 
@@ -142,7 +143,6 @@ require (
 	github.com/gohugoio/hashstructure v0.6.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/go-containerregistry v0.21.7 // indirect
 	github.com/google/licensecheck v0.3.1 // indirect
 	github.com/google/pprof v0.0.0-20250630185457-6e76a2b096b5 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
