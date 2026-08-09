@@ -22,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # No floating major-version tag - only exact vX.Y.Z releases exist.
+      # continue-on-error: this action requires the Dependency graph +
+      # GitHub Advanced Security, which isn't enabled on every private repo
+      # (same root cause as the SARIF-upload fixes elsewhere in this repo's
+      # history) - it can never succeed here regardless of the PR's diff, so
+      # it must never block merges.
       - uses: actions/dependency-review-action@v5.0.0
+        continue-on-error: true
         with:
           comment-summary-in-pr: always
