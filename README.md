@@ -140,8 +140,8 @@ per-job directory to create or clean up.
 ### Build & push the image
 
 ```
-docker build -t <your-registry>/hullcheck:0.2.1 .
-docker push <your-registry>/hullcheck:0.2.1
+docker build -t <your-registry>/hullcheck:0.2.2 .
+docker push <your-registry>/hullcheck:0.2.2
 ```
 
 syft/grype are linked into the binary as Go libraries (see `go.mod`), so
@@ -154,7 +154,7 @@ rebuild — there are no separate `--build-arg`s or CLI installs to manage.
 ```
 helm install hullcheck charts/hullcheck \
   --set image.repository=<your-registry>/hullcheck \
-  --set image.tag=0.2.1 \
+  --set image.tag=0.2.2 \
   --set route.enabled=true            # OpenShift
   # --set ingress.enabled=true --set ingress.host=hullcheck.example.com   # vanilla k8s
 ```

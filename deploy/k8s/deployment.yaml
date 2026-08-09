@@ -37,7 +37,7 @@ spec:
         - name: hullcheck
           # Build and push this image from the repository Dockerfile, then
           # point it here (see README.md).
-          image: ghcr.io/example/hullcheck:0.2.1
+          image: ghcr.io/example/hullcheck:0.2.2
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

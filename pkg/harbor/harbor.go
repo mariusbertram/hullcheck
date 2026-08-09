@@ -1,11 +1,12 @@
 package harbor
 
 import (
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mariusbertram/hullcheck/pkg/jobs"
 	"github.com/mariusbertram/hullcheck/pkg/validate"
@@ -31,6 +32,10 @@ type ScanRequest struct {
 	Registry struct {
 		URL           string `json:"url"`
 		Authorization string `json:"authorization"`
+		// Insecure indicates the registry is served over plain HTTP, not
+		// HTTPS ("an indicator of https or http", per Harbor's own
+		// pkg/scan/rest/v1/models.go) - not a TLS-cert-verification toggle.
+		Insecure bool `json:"insecure"`
 	} `json:"registry"`
 	Artifact struct {
 		Repository string `json:"repository"`
@@ -76,6 +81,20 @@ type Handler struct {
 	jobsMgr *jobs.Manager
 }
 
+// writeError responds with the Pluggable Scanner Spec's error shape
+// ({"error": {"message": "..."}}, a nested object) - Harbor's own scan job
+// unmarshals every non-2xx response body into that exact struct, and fails
+// with an opaque "cannot unmarshal string into Go struct field
+// ErrorResponse.error" (masking the real message) if given a bare string
+// instead.
+func writeError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/vnd.scanner.adapter.error; version=1.0")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"error": map[string]string{"message": message},
+	})
+}
+
 func NewHandler(jobsMgr *jobs.Manager) *Handler {
 	return &Handler{jobsMgr: jobsMgr}
 }
@@ -107,11 +126,31 @@ func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) AcceptScan(w http.ResponseWriter, r *http.Request) {
 	var req ScanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	// req.Artifact.Repository is bare ("library/foo", no host) - the
+	// registry to pull from is only conveyed via req.Registry.URL. Without
+	// prefixing it here, syft falls back to resolving the reference against
+	// Docker Hub, which either fails outright (private/internal-only images)
+	// or - worse - silently scans an unrelated public image that happens to
+	// share the same repository path and tag.
+	//
+	// The scheme on req.Registry.URL is the reliable signal for whether the
+	// registry is plain HTTP, not req.Registry.Insecure: Harbor's own
+	// launchScanJob (src/controller/scan/base_controller.go) builds
+	// v1.Registry{URL: registryAddr} without ever setting Insecure, so it's
+	// always false in practice, on both the internal- and external-address
+	// paths - even when registryAddr itself is an "http://" URL, as it will
+	// be for any Harbor installation with expose.tls.enabled: false.
+	insecureHTTP := strings.HasPrefix(req.Registry.URL, "http://") || req.Registry.Insecure
+	registryHost := strings.TrimPrefix(strings.TrimPrefix(req.Registry.URL, "https://"), "http://")
+
 	imageRef := req.Artifact.Repository
+	if registryHost != "" {
+		imageRef = registryHost + "/" + imageRef
+	}
 	if req.Artifact.Tag != "" {
 		imageRef += ":" + req.Artifact.Tag
 	} else if req.Artifact.Digest != "" {
@@ -119,41 +158,78 @@ func (h *Handler) AcceptScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !validate.IsValidImageRef(imageRef) {
-		http.Error(w, `{"error": "invalid artifact repository/tag/digest"}`, http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid artifact repository/tag/digest")
 		return
 	}
 
-	var regAuth map[string]string
-	if req.Registry.Authorization != "" {
-		regAuth = map[string]string{
-			"authority": req.Registry.URL,
-			"token":     req.Registry.Authorization,
-		}
-	}
+	regAuth := parseRegistryAuth(registryHost, req.Registry.Authorization)
 
-	job := h.jobsMgr.CreateJob(imageRef, regAuth, false, false)
+	job := h.jobsMgr.CreateJob(imageRef, regAuth, false, insecureHTTP)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(ScanResponse{ID: job.ID})
 }
 
+// regAuthAuthorityKey is the map key parseRegistryAuth uses for the
+// registry host, matching what scanner.RunScan expects in the regAuth map
+// CreateJob passes through.
+const regAuthAuthorityKey = "authority"
+
+// parseRegistryAuth turns Harbor's ready-to-use Authorization header value
+// ("Bearer <token>" or "Basic <base64(user:pass)>", per Harbor's own
+// pkg/scan/job.go) into the authority/username/password/token shape
+// jobs.Manager passes through to config.Manager.BuildRegistryOptions, which
+// wraps a bare token in its own "Bearer " prefix - passing the header value
+// straight through as a token would double it up into "Bearer Bearer ...".
+func parseRegistryAuth(authority, authorization string) map[string]string {
+	switch {
+	case strings.HasPrefix(authorization, "Bearer "):
+		return map[string]string{
+			regAuthAuthorityKey: authority,
+			"token":             strings.TrimPrefix(authorization, "Bearer "),
+		}
+	case strings.HasPrefix(authorization, "Basic "):
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authorization, "Basic "))
+		if err != nil {
+			return nil
+		}
+		if idx := strings.IndexByte(string(decoded), ':'); idx != -1 {
+			return map[string]string{
+				regAuthAuthorityKey: authority,
+				"username":          string(decoded[:idx]),
+				"password":          string(decoded[idx+1:]),
+			}
+		}
+	}
+	return nil
+}
+
 func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID string) {
 	job := h.jobsMgr.GetJob(scanID)
 	if job == nil {
-		http.Error(w, `{"error": "scan job not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "scan job not found")
 		return
 	}
 
 	if job.Status == "queued" || job.Status == "running" {
-		http.Error(w, `{"error": "scan still in progress"}`, http.StatusFound)
+		writeError(w, http.StatusFound, "scan still in progress")
+		return
+	}
+
+	if job.Status == "failed" {
+		msg := job.Error
+		if msg == "" {
+			msg = "scan failed"
+		}
+		writeError(w, http.StatusInternalServerError, msg)
 		return
 	}
 
 	grypePath := h.jobsMgr.ArtifactPath(scanID, "grype.json")
 	data, err := os.ReadFile(grypePath)
 	if err != nil {
-		http.Error(w, `{"error": "grype report artifact not found"}`, http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "grype report artifact not found")
 		return
 	}
 
