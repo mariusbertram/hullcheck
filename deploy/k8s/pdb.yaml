@@ -1,0 +1,15 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: hullcheck
+  namespace: hullcheck
+  labels:
+    app.kubernetes.io/name: hullcheck
+spec:
+  # Keep at least one pod serving during voluntary disruptions (node
+  # drains, cluster upgrades) so an in-flight scan/stream always has
+  # somewhere to run - the other replica(s) absorb the drained pod's load.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hullcheck

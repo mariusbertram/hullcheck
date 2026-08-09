@@ -1,4 +1,11 @@
-replicaCount: 1
+# Only used while autoscaling.enabled is false, or as the starting point
+# before the HPA takes over. See autoscaling below.
+replicaCount: 2
+
+# A scan (syft, then grype+grant) can run up to ~2x TOOL_TIMEOUT_MS (default
+# 15m each); give in-flight scans and their SSE streams room to finish a
+# graceful shutdown before kubelet SIGKILLs the process.
+terminationGracePeriodSeconds: 2100
 
 image:
   repository: ghcr.io/example/hullcheck
@@ -15,11 +22,28 @@ service:
 
 resources:
   requests:
-    cpu: 250m
+    # Sized so a single active scan (syft/grype/grant under MAX_CONCURRENCY)
+    # doesn't immediately read as >100% CPU utilization and pin the HPA at
+    # maxReplicas - utilization is computed against requests, not limits.
+    cpu: "1"
     memory: 256Mi
   limits:
     cpu: "2"
     memory: 2Gi
+
+# Requires metrics-server in the cluster. HPA scaling requires
+# persistence.accessMode: ReadWriteMany (below) since every replica must see
+# the same scan history/data dir - on a ReadWriteOnce-only cluster, disable
+# this and keep replicaCount: 1.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 # Works out of the box on both vanilla Kubernetes and OpenShift (restricted
 # SCC assigns a random UID at runtime - the image is built group(0)-writable
@@ -48,7 +72,13 @@ persistence:
   enabled: true
   # existingClaim: ""
   storageClassName: ""
-  accessMode: ReadWriteOnce
+  # ReadWriteMany because every replica mounts this same volume - scan
+  # history and per-job logs must be visible to whichever pod a request
+  # lands on, not just the one that ran the scan. Needs an RWX-capable
+  # StorageClass (NFS, Longhorn, EFS, Azure Files, CephFS, ...). Set to
+  # ReadWriteOnce only if replicaCount is 1 and autoscaling.enabled is
+  # false.
+  accessMode: ReadWriteMany
   size: 5Gi
 
 config:

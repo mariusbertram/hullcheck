@@ -8,6 +8,11 @@ resources:
   - pvc.yaml
   - deployment.yaml
   - service.yaml
+  - hpa.yaml
+  - pdb.yaml
+  # hpa.yaml requires metrics-server in-cluster, and pvc.yaml requires an
+  # RWX-capable StorageClass (see pvc.yaml). On a ReadWriteOnce-only
+  # cluster, drop hpa.yaml and pin deployment.yaml's replicas to 1.
   # Uncomment the one matching your platform:
   # - route.yaml     # OpenShift
   # - ingress.yaml   # vanilla Kubernetes

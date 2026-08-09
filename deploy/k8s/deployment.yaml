@@ -6,7 +6,16 @@ metadata:
   labels:
     app.kubernetes.io/name: hullcheck
 spec:
-  replicas: 1
+  # Managed by the HorizontalPodAutoscaler (hpa.yaml) once it's applied -
+  # this is only the initial/fallback replica count.
+  replicas: 2
+  strategy:
+    rollingUpdate:
+      # Never drop below the current count while updating - a scan can run
+      # for several minutes and streams a live SSE feed to the browser, so
+      # old pods must stay serving until their replacements are ready.
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: hullcheck
@@ -16,6 +25,10 @@ spec:
         app.kubernetes.io/name: hullcheck
     spec:
       serviceAccountName: hullcheck
+      # A scan (syft, then grype+grant) can run up to ~2x TOOL_TIMEOUT_MS
+      # (default 15m each); give in-flight scans and their SSE streams room
+      # to finish a graceful shutdown before kubelet SIGKILLs the process.
+      terminationGracePeriodSeconds: 2100
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -24,7 +37,7 @@ spec:
         - name: hullcheck
           # Build and push this image from the repository Dockerfile, then
           # point it here (see README.md).
-          image: ghcr.io/example/hullcheck:1.0.0
+          image: ghcr.io/example/hullcheck:0.2.1
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -38,6 +51,14 @@ spec:
           envFrom:
             - configMapRef:
                 name: hullcheck
+          lifecycle:
+            preStop:
+              # Give kube-proxy/ingress time to remove this pod from
+              # Endpoints before the app (which starts failing /readyz and
+              # then receives SIGTERM right after this hook returns) stops
+              # taking new connections.
+              exec:
+                command: ["sleep", "5"]
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
@@ -48,7 +69,11 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              cpu: 250m
+              # Sized so a single active scan (syft/grype/grant under
+              # MAX_CONCURRENCY) doesn't immediately read as >100% CPU
+              # utilization and pin the HPA at maxReplicas - utilization is
+              # computed against requests, not limits.
+              cpu: "1"
               memory: 256Mi
             limits:
               cpu: "2"

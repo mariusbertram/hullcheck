@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mariusbertram/hullcheck/pkg/config"
@@ -17,6 +19,11 @@ import (
 	"github.com/mariusbertram/hullcheck/pkg/validate"
 )
 
+// diskTailInterval is how often handleStreamScan re-reads a job's state
+// from the shared volume when it's streaming a job this pod didn't create
+// (so there's no local pub/sub channel carrying its events).
+const diskTailInterval = time.Second
+
 type Server struct {
 	cfgManager *config.Manager
 	jobsMgr    *jobs.Manager
@@ -24,6 +31,8 @@ type Server struct {
 	staticFS   fs.FS
 	mux        *http.ServeMux
 	readyFn    func() bool
+	draining   atomic.Bool
+	drainCh    chan struct{}
 }
 
 // NewServer wires up the HTTP API. readyFn reports whether the server can
@@ -46,10 +55,22 @@ func NewServer(cfgMgr *config.Manager, jobsMgr *jobs.Manager, staticEmbed embed.
 		staticFS:   subFS,
 		mux:        http.NewServeMux(),
 		readyFn:    readyFn,
+		drainCh:    make(chan struct{}),
 	}
 
 	s.routes()
 	return s
+}
+
+// Drain marks the server as shutting down: /readyz starts failing (so
+// Kubernetes stops routing new traffic here) and any handler blocked
+// waiting on drainCh - namely open SSE streams - unblocks and returns, so
+// http.Server.Shutdown isn't stuck waiting for connections that would
+// otherwise stay open indefinitely.
+func (s *Server) Drain() {
+	if s.draining.CompareAndSwap(false, true) {
+		close(s.drainCh)
+	}
 }
 
 func (s *Server) routes() {
@@ -147,16 +168,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleOK(w http.ResponseWriter, r *http.Request) {
+func writeStatus(w http.ResponseWriter, code int, status string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
+}
+
+func (s *Server) handleOK(w http.ResponseWriter, r *http.Request) {
+	writeStatus(w, http.StatusOK, "ok")
 }
 
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.draining.Load() {
+		writeStatus(w, http.StatusServiceUnavailable, "draining")
+		return
+	}
 	if s.readyFn != nil && !s.readyFn() {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "loading vulnerability database"})
+		writeStatus(w, http.StatusServiceUnavailable, "loading vulnerability database")
 		return
 	}
 	s.handleOK(w, r)
@@ -293,13 +321,28 @@ func (s *Server) handleStreamScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
+	// Jobs only broadcast their live events to subscribers in the same
+	// process (jobs.Manager.Broadcast doesn't cross pod boundaries). If
+	// another pod queued/is running this job, subscribing here would just
+	// hang until the client gives up - poll the shared volume instead.
+	// EventSource reconnects automatically on a dropped connection, so a
+	// client that started on the owning pod and got load-balanced here on
+	// reconnect (e.g. after that pod drained) still picks up live updates.
+	if !s.jobsMgr.IsLocal(id) {
+		s.tailFromDisk(ctx, id, send, len(job.Logs))
+		return
+	}
+
 	ch, unsubscribe := s.jobsMgr.Subscribe(id)
 	defer unsubscribe()
 
-	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-s.drainCh:
 			return
 		case evt, ok := <-ch:
 			if !ok {
@@ -307,6 +350,42 @@ func (s *Server) handleStreamScan(w http.ResponseWriter, r *http.Request) {
 			}
 			send(evt.Type, evt.Data)
 			if evt.Type == "done" {
+				return
+			}
+		}
+	}
+}
+
+// tailFromDisk polls a job's persisted state for a client streaming a job
+// this pod doesn't own, since job.json/combined.log are the only channel
+// through which the owning pod's updates become visible here.
+func (s *Server) tailFromDisk(ctx context.Context, id string, send func(evt string, data interface{}), sentLogs int) {
+	ticker := time.NewTicker(diskTailInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.drainCh:
+			return
+		case <-ticker.C:
+			cur := s.jobsMgr.GetJob(id)
+			if cur == nil {
+				// Transient: e.g. a concurrent persistJob rename losing a
+				// race with this read, not necessarily the job vanishing -
+				// skip this tick rather than ending the stream.
+				continue
+			}
+			if len(cur.Logs) > sentLogs {
+				for _, entry := range cur.Logs[sentLogs:] {
+					send("log", entry)
+				}
+				sentLogs = len(cur.Logs)
+			}
+			send("status", cur)
+			if cur.Status == "completed" || cur.Status == "failed" {
+				send("done", cur)
 				return
 			}
 		}

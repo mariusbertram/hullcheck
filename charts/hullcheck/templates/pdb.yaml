@@ -1,0 +1,16 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "hullcheck.fullname" . }}
+  labels:
+    {{- include "hullcheck.labels" . | nindent 4 }}
+spec:
+  # Keep at least one pod serving during voluntary disruptions (node
+  # drains, cluster upgrades) so an in-flight scan/stream always has
+  # somewhere to run - the other replica(s) absorb the drained pod's load.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "hullcheck.selectorLabels" . | nindent 6 }}
+{{- end }}

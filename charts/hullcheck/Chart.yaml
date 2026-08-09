@@ -2,8 +2,8 @@ apiVersion: v2
 name: hullcheck
 description: WebUI to scan container images / OCI artifacts with Anchore syft, grype and grant
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.2.1
+appVersion: "0.2.1"
 keywords:
   - anchore
   - syft

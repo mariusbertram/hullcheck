@@ -140,8 +140,8 @@ per-job directory to create or clean up.
 ### Build & push the image
 
 ```
-docker build -t <your-registry>/hullcheck:1.0.0 .
-docker push <your-registry>/hullcheck:1.0.0
+docker build -t <your-registry>/hullcheck:0.2.1 .
+docker push <your-registry>/hullcheck:0.2.1
 ```
 
 syft/grype are linked into the binary as Go libraries (see `go.mod`), so
@@ -154,7 +154,7 @@ rebuild — there are no separate `--build-arg`s or CLI installs to manage.
 ```
 helm install hullcheck charts/hullcheck \
   --set image.repository=<your-registry>/hullcheck \
-  --set image.tag=1.0.0 \
+  --set image.tag=0.2.1 \
   --set route.enabled=true            # OpenShift
   # --set ingress.enabled=true --set ingress.host=hullcheck.example.com   # vanilla k8s
 ```
@@ -173,6 +173,44 @@ Key values (see `charts/hullcheck/values.yaml` for the full list):
   `Ingress`) — both default to off, i.e. cluster-internal only.
 - Runs out of the box under OpenShift's `restricted` SCC: the image is
   built group(0)-writable so an arbitrary assigned UID still works.
+
+### Scaling
+
+The chart (and `deploy/k8s/`) ship an autoscaling `Deployment` by default:
+`HorizontalPodAutoscaler` (CPU-based, `autoscaling.*`), a
+`PodDisruptionBudget` (`podDisruptionBudget.*`), a rolling-update strategy
+that never drops below the current replica count, and a
+`terminationGracePeriodSeconds` generous enough for a scan (up to ~2x
+`TOOL_TIMEOUT_MS`) plus its SSE stream to finish before a pod is force-killed.
+
+Two things this needs to actually work:
+
+- **A cluster metrics pipeline** (e.g. `metrics-server`) — the HPA reads
+  `cpu`/`requests.cpu` utilization; without it, `kubectl get hpa` shows
+  `<unknown>` and it never scales.
+- **An RWX-capable `StorageClass`** for `persistence.accessMode` (NFS,
+  Longhorn, EFS, Azure Files, CephFS, ...) — every replica mounts the same
+  `/data` volume, since scan history/artifacts are only written to disk, not
+  shared through any other backend. If only `ReadWriteOnce` storage is
+  available, set `autoscaling.enabled=false` and `replicaCount=1` (or drop
+  `hpa.yaml` from `deploy/k8s/kustomization.yaml` and pin `replicas: 1`).
+
+Job state, the live SSE stream, and the per-job worker queue live in each
+pod's memory - there's no Redis/DB behind this. A request can land on a pod
+that didn't create the job (any `GET`/list call, or the initial connection of
+an SSE stream); that pod falls back to reading the job straight off the
+shared volume, polling it once a second, so the UI keeps working regardless
+of which replica handles a given request. `EventSource` reconnects on its
+own if a stream's pod is replaced mid-scan (rolling update, scale-down,
+node drain), and the process only exits after any scan it's still running
+locally has finished (bounded by `terminationGracePeriodSeconds`), so
+scaling events don't orphan a job mid-run.
+
+This doesn't (yet) extend to `config.Manager` (the Settings page - proxy,
+registry credentials, etc.): it also caches in memory per pod, but unlike
+jobs, a config change made through one pod isn't picked up by others until
+they restart. With multiple replicas, change settings sparingly and expect
+a brief window of inconsistent behavior across pods after doing so.
 
 ### Plain manifests (no Helm)
 

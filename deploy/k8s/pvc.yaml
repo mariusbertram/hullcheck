@@ -4,9 +4,15 @@ metadata:
   name: hullcheck-data
   namespace: hullcheck
 spec:
+  # ReadWriteMany because every replica in the Deployment mounts this same
+  # volume - scan history, artifacts and per-job logs must be visible to
+  # whichever pod a request lands on, not just the one that ran the scan.
+  # Needs an RWX-capable StorageClass (NFS, Longhorn, EFS, Azure Files,
+  # CephFS, ...). If only ReadWriteOnce is available, pin replicas to 1 and
+  # remove/disable the HPA instead - see hpa.yaml and README.md.
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   resources:
     requests:
       storage: 5Gi
-  # storageClassName: your-storage-class
+  # storageClassName: your-rwx-storage-class

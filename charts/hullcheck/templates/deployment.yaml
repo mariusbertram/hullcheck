@@ -5,7 +5,16 @@ metadata:
   labels:
     {{- include "hullcheck.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    rollingUpdate:
+      # Never drop below the current count while updating - a scan can run
+      # for several minutes and streams a live SSE feed to the browser, so
+      # old pods must stay serving until their replacements are ready.
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "hullcheck.selectorLabels" . | nindent 6 }}
@@ -22,6 +31,7 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "hullcheck.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -41,6 +51,14 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "hullcheck.fullname" . }}
+          lifecycle:
+            preStop:
+              # Give kube-proxy/ingress time to remove this pod from
+              # Endpoints before the app (which starts failing /readyz and
+              # then receives SIGTERM right after this hook returns) stops
+              # taking new connections.
+              exec:
+                command: ["sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz

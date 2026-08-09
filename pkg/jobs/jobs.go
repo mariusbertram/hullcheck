@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -147,15 +148,21 @@ type Event struct {
 }
 
 type Manager struct {
-	mu          sync.RWMutex
-	scansDir    string
-	indexFile   string
+	mu       sync.RWMutex
+	scansDir string
+	// jobs holds only jobs this process itself queued via CreateJob - the
+	// only ones its own worker pool will ever run and Broadcast events for.
+	// A multi-pod deployment shares scansDir but not memory: every other
+	// pod's jobs live only on disk as far as this process is concerned, so
+	// GetJob/IsLocal treat presence here as "this pod owns it" and fall
+	// back to disk for everything else (see GetJob).
 	jobs        map[string]*Job
 	subscribers map[string][]chan Event
 	subMu       sync.RWMutex
 	runner      func(job *Job, regAuth map[string]string)
 	queue       chan QueueItem
 	maxHistory  int
+	activeWG    sync.WaitGroup
 }
 
 func NewManager(dataDir string) (*Manager, error) {
@@ -169,14 +176,12 @@ func NewManager(dataDir string) (*Manager, error) {
 
 	m := &Manager{
 		scansDir:    scansDir,
-		indexFile:   filepath.Join(scansDir, "index.json"),
 		jobs:        make(map[string]*Job),
 		subscribers: make(map[string][]chan Event),
 		queue:       make(chan QueueItem, 500),
 		maxHistory:  maxHistory,
 	}
 
-	m.loadHistory()
 	go m.workerPool(concurrency)
 	log.Printf("jobs: worker pool started (concurrency=%d, maxHistory=%d)", concurrency, maxHistory)
 
@@ -192,9 +197,30 @@ func (m *Manager) workerPool(concurrency int) {
 		workerID := i
 		go func() {
 			for item := range m.queue {
+				m.activeWG.Add(1)
 				m.executeJobSafely(workerID, item)
+				m.activeWG.Done()
 			}
 		}()
+	}
+}
+
+// WaitIdle blocks until this process has no scans actively running, or ctx
+// is done. Graceful shutdown calls this after closing the HTTP listener so
+// a scan already running here (its worker goroutine isn't tied to any HTTP
+// handler) gets to finish instead of being abandoned mid-run - which would
+// otherwise leave the job stuck "running" forever, and any pod polling it
+// via the disk-tail fallback stuck watching a file that will never change
+// again.
+func (m *Manager) WaitIdle(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		m.activeWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -214,7 +240,6 @@ func (m *Manager) executeJobSafely(workerID int, item QueueItem) {
 				job.FinishedAt = &finishTime
 				job.Status = jobStatusFailed
 				m.persistJob(job)
-				m.persistIndex()
 				clone = cloneJob(job)
 			}
 			m.mu.Unlock()
@@ -238,7 +263,6 @@ func (m *Manager) executeJob(item QueueItem) {
 	job.Status = "running"
 	job.StartedAt = &now
 	m.persistJob(job)
-	m.persistIndex()
 	startClone := cloneJob(job)
 	m.mu.Unlock()
 
@@ -259,7 +283,6 @@ func (m *Manager) executeJob(item QueueItem) {
 		job.Status = "completed"
 	}
 	m.persistJob(job)
-	m.persistIndex()
 	doneClone := cloneJob(job)
 	m.mu.Unlock()
 
@@ -305,13 +328,25 @@ func (m *Manager) CreateJob(image string, regAuth map[string]string, insecureTLS
 	m.jobs[id] = job
 	_ = os.MkdirAll(filepath.Join(m.scansDir, id), 0755)
 	m.persistJob(job)
-	m.persistIndex()
 	clone := cloneJob(job)
 	m.mu.Unlock()
 
 	log.Printf("jobs: scan %s queued (image=%s)", id, image)
 	m.queue <- QueueItem{JobID: id, RegistryAuth: regAuth}
 	return clone
+}
+
+// IsLocal reports whether this process queued id via CreateJob, meaning
+// it's the pod that will run it and Broadcast its events locally. Callers
+// use this to decide whether streaming a job's live updates can subscribe
+// to the local pub/sub channel or must instead poll the shared volume,
+// since Broadcast never crosses pod boundaries and no other pod will ever
+// receive an update for a job it didn't create itself.
+func (m *Manager) IsLocal(id string) bool {
+	m.mu.RLock()
+	_, exists := m.jobs[id]
+	m.mu.RUnlock()
+	return exists
 }
 
 func (m *Manager) GetJob(id string) *Job {
@@ -328,40 +363,59 @@ func (m *Manager) GetJob(id string) *Job {
 	return m.readFullJob(id)
 }
 
+// ListJobs enumerates scansDir on the shared volume rather than this
+// process's in-memory jobs map, which only ever holds jobs this pod itself
+// created (see IsLocal) - a multi-pod deployment's scan history spans every
+// pod's writes, and the filesystem is the only place that union is visible.
+// It reads each job's shallow job.json (no combined.log) so listing a large
+// history doesn't mean loading every job's full log buffer into memory.
 func (m *Manager) ListJobs() []JobSummary {
-	m.mu.RLock()
-	list := m.listJobsLocked()
-	// listJobsLocked shares Tools/Summary pointers with the live jobs map;
-	// clone them since the list escapes the lock here (unlike persistIndex,
-	// which marshals while still holding it).
-	for i := range list {
-		list[i].Tools = cloneToolsMap(list[i].Tools)
-		list[i].Summary = cloneSummary(list[i].Summary)
+	entries, err := os.ReadDir(m.scansDir)
+	if err != nil {
+		return nil
 	}
-	m.mu.RUnlock()
-	return list
-}
 
-// listJobsLocked assumes the caller already holds m.mu (read or write).
-func (m *Manager) listJobsLocked() []JobSummary {
-	list := make([]JobSummary, 0, len(m.jobs))
-	for _, j := range m.jobs {
-		list = append(list, JobSummary{
-			ID:         j.ID,
-			Image:      j.Image,
-			Status:     j.Status,
-			CreatedAt:  j.CreatedAt,
-			StartedAt:  j.StartedAt,
-			FinishedAt: j.FinishedAt,
-			Tools:      j.Tools,
-			Summary:    j.Summary,
-			Error:      j.Error,
-		})
+	list := make([]JobSummary, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if s := m.readJobSummary(e.Name()); s != nil {
+			list = append(list, *s)
+		}
 	}
+
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].CreatedAt > list[j].CreatedAt
 	})
+	if m.maxHistory > 0 && len(list) > m.maxHistory {
+		list = list[:m.maxHistory]
+	}
 	return list
+}
+
+// readJobSummary reads just id's job.json (skipping combined.log, which
+// JobSummary doesn't need) directly off disk.
+func (m *Manager) readJobSummary(id string) *JobSummary {
+	data, err := os.ReadFile(filepath.Join(m.scansDir, id, "job.json"))
+	if err != nil {
+		return nil
+	}
+	var job Job
+	if err := json.Unmarshal(data, &job); err != nil {
+		return nil
+	}
+	return &JobSummary{
+		ID:         job.ID,
+		Image:      job.Image,
+		Status:     job.Status,
+		CreatedAt:  job.CreatedAt,
+		StartedAt:  job.StartedAt,
+		FinishedAt: job.FinishedAt,
+		Tools:      job.Tools,
+		Summary:    job.Summary,
+		Error:      job.Error,
+	}
 }
 
 func (m *Manager) SetToolStatus(id, tool, status string, exitCode *int) {
@@ -494,6 +548,12 @@ func (m *Manager) Broadcast(id string, evt Event) {
 	}
 }
 
+// persistJob writes via a temp file + rename rather than directly
+// (os.WriteFile truncates in place) so concurrent readers on other pods -
+// ListJobs and the SSE disk-tail fallback now read this file directly off
+// the shared volume, not just this process's memory - never observe a
+// truncated or partially-written job.json. Rename within the same
+// directory is atomic on any POSIX-compliant filesystem, including NFS.
 func (m *Manager) persistJob(job *Job) {
 	dir := filepath.Join(m.scansDir, job.ID)
 	_ = os.MkdirAll(dir, 0755)
@@ -502,34 +562,13 @@ func (m *Manager) persistJob(job *Job) {
 	shallow := *job
 	shallow.Logs = nil
 	data, _ := json.MarshalIndent(shallow, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, "job.json"), data, 0644)
-}
 
-// persistIndex assumes the caller already holds m.mu. The on-disk history is
-// capped at maxHistory entries (oldest first, dropped) so DATA_DIR/scans
-// doesn't grow the index file unboundedly; ListJobs itself is not capped.
-func (m *Manager) persistIndex() {
-	list := m.listJobsLocked()
-	if m.maxHistory > 0 && len(list) > m.maxHistory {
-		list = list[:m.maxHistory]
-	}
-	data, _ := json.MarshalIndent(list, "", "  ")
-	_ = os.WriteFile(m.indexFile, data, 0644)
-}
-
-func (m *Manager) loadHistory() {
-	data, err := os.ReadFile(m.indexFile)
-	if err != nil {
+	final := filepath.Join(dir, "job.json")
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return
 	}
-	var summaries []JobSummary
-	if err := json.Unmarshal(data, &summaries); err == nil {
-		for _, s := range summaries {
-			if full := m.readFullJob(s.ID); full != nil {
-				m.jobs[full.ID] = full
-			}
-		}
-	}
+	_ = os.Rename(tmp, final)
 }
 
 func (m *Manager) readFullJob(id string) *Job {
