@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mariusbertram/hullcheck/pkg/jobs"
 )
+
+const scanBodyAlpine = `{"artifact": {"repository": "library/alpine", "tag": "3.20"}}`
 
 func TestHarborMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -33,6 +36,128 @@ func TestHarborMetadata(t *testing.T) {
 	if meta.Scanner.Name != scannerName {
 		t.Errorf("expected scanner name 'Hullcheck', got '%s'", meta.Scanner.Name)
 	}
+
+	var sawVuln, sawSBOM bool
+	for _, c := range meta.Capabilities {
+		switch c.Type {
+		case scanTypeVulnerability:
+			sawVuln = true
+		case scanTypeSBOM:
+			sawSBOM = true
+			if len(c.ProducesMimeTypes) == 0 || c.ProducesMimeTypes[0] != mimeTypeSBOMReport {
+				t.Errorf("expected sbom capability to produce %q, got %v", mimeTypeSBOMReport, c.ProducesMimeTypes)
+			}
+		}
+	}
+	if !sawVuln {
+		t.Errorf("expected a %q capability", scanTypeVulnerability)
+	}
+	if !sawSBOM {
+		t.Errorf("expected a %q capability", scanTypeSBOM)
+	}
+}
+
+// TestHarborGetReportSBOM guards the SBOM report path added alongside the
+// existing vulnerability report: Harbor requests it via
+// Accept: application/vnd.security.sbom.report+json; version=1.0 (see
+// Harbor's own GetScanReport in pkg/scan/rest/v1/client.go), and expects
+// the response wrapped per src/pkg/scan/sbom/model.RawSBOMReport -
+// generated_at/scanner/media_type alongside the SBOM content itself keyed
+// under "sbom", not the raw SPDX document directly.
+func TestHarborGetReportSBOM(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobsMgr, _ := jobs.NewManager(tmpDir)
+	handler := NewHandler(jobsMgr)
+
+	body := scanBodyAlpine
+	req := httptest.NewRequest("POST", "/api/v1/scan", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.AcceptScan(rec, req)
+
+	var res ScanResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	waitForJobDone(t, jobsMgr, res.ID)
+
+	// jobs.NewManager has no runner registered in tests, so no scanner ever
+	// actually ran and wrote sbom-spdx.json - write a stand-in artifact the
+	// same way scanner.runSyft would, to exercise getSBOMReport itself.
+	spdxDoc := `{"spdxVersion": "SPDX-2.3", "name": "library/alpine:3.20"}`
+	if err := os.WriteFile(jobsMgr.ArtifactPath(res.ID, "sbom-spdx.json"), []byte(spdxDoc), 0644); err != nil {
+		t.Fatalf("failed to write stand-in spdx artifact: %v", err)
+	}
+
+	reportReq := httptest.NewRequest("GET", "/api/v1/scan/"+res.ID+"/report", nil)
+	reportReq.Header.Set("Accept", mimeTypeSBOMReport)
+	reportRec := httptest.NewRecorder()
+	handler.GetReport(reportRec, reportReq, res.ID)
+
+	if reportRec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", reportRec.Code, reportRec.Body.String())
+	}
+	if ct := reportRec.Header().Get("Content-Type"); ct != mimeTypeSBOMReport {
+		t.Errorf("expected Content-Type %q, got %q", mimeTypeSBOMReport, ct)
+	}
+
+	var envelope struct {
+		GeneratedAt string                 `json:"generated_at"`
+		Scanner     ScannerInfo            `json:"scanner"`
+		MediaType   string                 `json:"media_type"`
+		SBOM        map[string]interface{} `json:"sbom"`
+	}
+	if err := json.Unmarshal(reportRec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode envelope: %v", err)
+	}
+	if envelope.MediaType != mediaTypeSPDX {
+		t.Errorf("expected media_type %q, got %q", mediaTypeSPDX, envelope.MediaType)
+	}
+	if envelope.Scanner.Name != scannerName {
+		t.Errorf("expected scanner name %q, got %q", scannerName, envelope.Scanner.Name)
+	}
+	if envelope.SBOM["spdxVersion"] != "SPDX-2.3" {
+		t.Errorf("expected sbom content to be the parsed SPDX doc, got %v", envelope.SBOM)
+	}
+}
+
+// TestHarborGetReportSBOMMissing guards the case where a scan predates SBOM
+// support (or SPDX encoding failed) and sbom-spdx.json was never written -
+// this must fail cleanly (a parseable error Harbor can surface), not with
+// an unhandled panic or a body Harbor's client can't parse.
+func TestHarborGetReportSBOMMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobsMgr, _ := jobs.NewManager(tmpDir)
+	handler := NewHandler(jobsMgr)
+
+	body := scanBodyAlpine
+	req := httptest.NewRequest("POST", "/api/v1/scan", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.AcceptScan(rec, req)
+
+	var res ScanResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	waitForJobDone(t, jobsMgr, res.ID)
+
+	reportReq := httptest.NewRequest("GET", "/api/v1/scan/"+res.ID+"/report", nil)
+	reportReq.Header.Set("Accept", mimeTypeSBOMReport)
+	reportRec := httptest.NewRecorder()
+	handler.GetReport(reportRec, reportReq, res.ID)
+
+	if reportRec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", reportRec.Code)
+	}
+
+	var errResp struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(reportRec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("error body did not match the {error:{message}} shape Harbor expects: %v", err)
+	}
+	if errResp.Error.Message == "" {
+		t.Errorf("expected a non-empty error message")
+	}
 }
 
 func TestHarborAcceptScan(t *testing.T) {
@@ -40,7 +165,7 @@ func TestHarborAcceptScan(t *testing.T) {
 	jobsMgr, _ := jobs.NewManager(tmpDir)
 	handler := NewHandler(jobsMgr)
 
-	body := `{"artifact": {"repository": "library/alpine", "tag": "3.20"}}`
+	body := scanBodyAlpine
 	req := httptest.NewRequest("POST", "/api/v1/scan", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 

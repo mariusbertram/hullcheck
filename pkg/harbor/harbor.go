@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mariusbertram/hullcheck/pkg/jobs"
 	"github.com/mariusbertram/hullcheck/pkg/validate"
@@ -24,9 +25,24 @@ type ScannerInfo struct {
 }
 
 type Capability struct {
+	// Type is "vulnerability" or "sbom" (scanTypeVulnerability /
+	// scanTypeSBOM below) - Harbor keys its supports_vulnerability /
+	// supports_sbom flags off this per capability entry, per its own
+	// pkg/scan/rest/v1/models.go.
+	Type              string   `json:"type"`
 	ConsumesMimeTypes []string `json:"consumes_mime_types"`
 	ProducesMimeTypes []string `json:"produces_mime_types"`
 }
+
+const (
+	scanTypeVulnerability = "vulnerability"
+	scanTypeSBOM          = "sbom"
+
+	mimeTypeVulnHarbor  = "application/vnd.scanner.adapter.vuln.report.harbor+json; version=1.0"
+	mimeTypeVulnGeneric = "application/vnd.security.vulnerability.report; version=1.1"
+	mimeTypeSBOMReport  = "application/vnd.security.sbom.report+json; version=1.0"
+	mediaTypeSPDX       = "application/spdx+json"
+)
 
 type ScanRequest struct {
 	Registry struct {
@@ -73,9 +89,18 @@ type ArtifactInfo struct {
 	Tag        string `json:"tag"`
 }
 
-// scannerName is the Harbor scanner adapter's advertised name, reused in
-// both the metadata endpoint and the vulnerability report's scanner block.
-const scannerName = "Hullcheck"
+// scannerName/scannerVendor/scannerVersion are the Harbor scanner adapter's
+// advertised identity, reused in the metadata endpoint and every report's
+// scanner block (see scannerInfo).
+const (
+	scannerName    = "Hullcheck"
+	scannerVendor  = "Hullcheck"
+	scannerVersion = "v1.0.0"
+)
+
+func scannerInfo() ScannerInfo {
+	return ScannerInfo{Name: scannerName, Vendor: scannerVendor, Version: scannerVersion}
+}
 
 type Handler struct {
 	jobsMgr *jobs.Manager
@@ -101,20 +126,27 @@ func NewHandler(jobsMgr *jobs.Manager) *Handler {
 
 func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 	meta := Metadata{
-		Scanner: ScannerInfo{
-			Name:    scannerName,
-			Vendor:  "Hullcheck",
-			Version: "v1.0.0",
-		},
+		Scanner: scannerInfo(),
 		Capabilities: []Capability{
 			{
+				Type: scanTypeVulnerability,
 				ConsumesMimeTypes: []string{
 					"application/vnd.docker.distribution.manifest.v2+json",
 					"application/vnd.oci.image.manifest.v1+json",
 				},
 				ProducesMimeTypes: []string{
-					"application/vnd.scanner.adapter.vuln.report.harbor+json; version=1.0",
-					"application/vnd.security.vulnerability.report; version=1.1",
+					mimeTypeVulnHarbor,
+					mimeTypeVulnGeneric,
+				},
+			},
+			{
+				Type: scanTypeSBOM,
+				ConsumesMimeTypes: []string{
+					"application/vnd.docker.distribution.manifest.v2+json",
+					"application/vnd.oci.image.manifest.v1+json",
+				},
+				ProducesMimeTypes: []string{
+					mimeTypeSBOMReport,
 				},
 			},
 		},
@@ -226,6 +258,11 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 		return
 	}
 
+	if strings.Contains(r.Header.Get("Accept"), "sbom") {
+		h.getSBOMReport(w, scanID, job)
+		return
+	}
+
 	grypePath := h.jobsMgr.ArtifactPath(scanID, "grype.json")
 	data, err := os.ReadFile(grypePath)
 	if err != nil {
@@ -283,17 +320,47 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 			Artifact: ArtifactInfo{
 				Repository: job.Image,
 			},
-			Scanner: ScannerInfo{
-				Name:    scannerName,
-				Vendor:  "Hullcheck",
-				Version: "v1.0.0",
-			},
+			Scanner:  scannerInfo(),
 			Severity: highestSev,
 			Vulns:    vulns,
 		},
 	}
 
 	w.Header().Set("Content-Type", "application/vnd.security.vulnerability.report; version=1.1")
+	_ = json.NewEncoder(w).Encode(report)
+}
+
+// getSBOMReport serves the SPDX SBOM scanner.RunScan wrote alongside the
+// native-format one, wrapped in the envelope Harbor's SBOM scan handler
+// expects (src/pkg/scan/sbom/model.RawSBOMReport): generated_at, scanner,
+// media_type, and the SBOM content itself keyed under "sbom".
+func (h *Handler) getSBOMReport(w http.ResponseWriter, scanID string, job *jobs.Job) {
+	spdxPath := h.jobsMgr.ArtifactPath(scanID, "sbom-spdx.json")
+	data, err := os.ReadFile(spdxPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "spdx sbom artifact not found")
+		return
+	}
+
+	var spdx map[string]interface{}
+	if err := json.Unmarshal(data, &spdx); err != nil {
+		writeError(w, http.StatusInternalServerError, "spdx sbom artifact is not valid JSON")
+		return
+	}
+
+	generatedAt := ""
+	if job.FinishedAt != nil {
+		generatedAt = time.UnixMilli(*job.FinishedAt).UTC().Format(time.RFC3339)
+	}
+
+	report := map[string]interface{}{
+		"generated_at": generatedAt,
+		"scanner":      scannerInfo(),
+		"media_type":   mediaTypeSPDX,
+		"sbom":         spdx,
+	}
+
+	w.Header().Set("Content-Type", mimeTypeSBOMReport)
 	_ = json.NewEncoder(w).Encode(report)
 }
 

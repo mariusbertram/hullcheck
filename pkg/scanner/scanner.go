@@ -17,6 +17,7 @@ import (
 	"github.com/anchore/stereoscope/pkg/image"
 	"github.com/anchore/syft/syft"
 	"github.com/anchore/syft/syft/cataloging/pkgcataloging"
+	"github.com/anchore/syft/syft/format/spdxjson"
 	"github.com/anchore/syft/syft/format/syftjson"
 	syftPkg "github.com/anchore/syft/syft/pkg"
 	"github.com/anchore/syft/syft/pkg/cataloger/golang"
@@ -168,10 +169,11 @@ func (r *Runner) RunScan(job *jobs.Job, regAuth map[string]string) {
 	registryOpts := r.cfgManager.BuildRegistryOptions(perScanAuth, job.Options.InsecureSkipTLSVerify, job.Options.InsecureUseHTTP)
 
 	sbomPath := r.jobsMgr.ArtifactPath(job.ID, "sbom.json")
+	sbomSpdxPath := r.jobsMgr.ArtifactPath(job.ID, "sbom-spdx.json")
 	grypePath := r.jobsMgr.ArtifactPath(job.ID, "grype.json")
 	grantPath := r.jobsMgr.ArtifactPath(job.ID, "grant.json")
 
-	sbomObj, sbomJSON, syftOk := r.runSyft(ctx, job, registryOpts, sbomPath)
+	sbomObj, sbomJSON, syftOk := r.runSyft(ctx, job, registryOpts, sbomPath, sbomSpdxPath)
 	if !syftOk {
 		r.jobsMgr.SetError(job.ID, "syft failed to build an SBOM - check the logs and image reference / registry credentials.")
 		return
@@ -220,8 +222,10 @@ func (r *Runner) RunScan(job *jobs.Job, regAuth map[string]string) {
 
 // runSyft catalogs job.Image via syft's library (no CLI, no PATH lookup) and
 // writes the SBOM as syft's native JSON, which grype consumes downstream
-// without re-pulling the registry.
-func (r *Runner) runSyft(ctx context.Context, job *jobs.Job, regOpts image.RegistryOptions, outFile string) (*sbom.SBOM, []byte, bool) {
+// without re-pulling the registry, plus an SPDX JSON copy (spdxOutFile) for
+// the Harbor Pluggable Scanner Adapter's SBOM report - Harbor's own SBOM
+// tab expects application/spdx+json content, not syft's native format.
+func (r *Runner) runSyft(ctx context.Context, job *jobs.Job, regOpts image.RegistryOptions, outFile, spdxOutFile string) (*sbom.SBOM, []byte, bool) {
 	tool := "syft"
 	r.jobsMgr.SetToolStatus(job.ID, tool, "running", nil)
 	r.jobsMgr.AppendLog(job.ID, tool, "info", fmt.Sprintf("cataloging %s", job.Image))
@@ -274,6 +278,21 @@ func (r *Runner) runSyft(ctx context.Context, job *jobs.Job, regOpts image.Regis
 	}
 	if err := os.WriteFile(outFile, buf.Bytes(), 0644); err != nil {
 		return nil, nil, fail("failed to write %s: %v", outFile, err)
+	}
+
+	// SPDX export is a secondary output for Harbor's SBOM report (see
+	// AcceptScan) - grype/grant only ever consume the native JSON above, so
+	// a failure here shouldn't fail the scan, just leave the Harbor SBOM
+	// report unavailable for this job.
+	if spdxEncoder, err := spdxjson.NewFormatEncoderWithConfig(spdxjson.DefaultEncoderConfig()); err != nil {
+		r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("spdx encoder init error: %v", err))
+	} else {
+		var spdxBuf bytes.Buffer
+		if err := spdxEncoder.Encode(&spdxBuf, *sbomObj); err != nil {
+			r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("spdx encode error: %v", err))
+		} else if err := os.WriteFile(spdxOutFile, spdxBuf.Bytes(), 0644); err != nil {
+			r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("failed to write %s: %v", spdxOutFile, err))
+		}
 	}
 
 	exitCode := 0

@@ -17,7 +17,8 @@ on Kubernetes/OpenShift.
 
 A [Harbor Pluggable Scanner Adapter](https://github.com/goharbor/pluggable-scanner-spec)
 (`/api/v1/*`) is built in, so hullcheck can also be registered as a scanner
-in Harbor and driven directly from Harbor's own vulnerability scanning UI.
+in Harbor and driven directly from Harbor's own vulnerability scanning and
+SBOM generation UI.
 
 ## Architecture
 
@@ -140,8 +141,8 @@ per-job directory to create or clean up.
 ### Build & push the image
 
 ```
-docker build -t <your-registry>/hullcheck:0.2.2 .
-docker push <your-registry>/hullcheck:0.2.2
+docker build -t <your-registry>/hullcheck:0.3.0 .
+docker push <your-registry>/hullcheck:0.3.0
 ```
 
 syft/grype are linked into the binary as Go libraries (see `go.mod`), so
@@ -154,7 +155,7 @@ rebuild — there are no separate `--build-arg`s or CLI installs to manage.
 ```
 helm install hullcheck charts/hullcheck \
   --set image.repository=<your-registry>/hullcheck \
-  --set image.tag=0.2.2 \
+  --set image.tag=0.3.0 \
   --set route.enabled=true            # OpenShift
   # --set ingress.enabled=true --set ingress.host=hullcheck.example.com   # vanilla k8s
 ```
@@ -330,7 +331,7 @@ outbound access:
 | `POST` | `/api/scans` | start a scan: `{ image, registryAuth?, insecureSkipTlsVerify?, insecureUseHttp? }` |
 | `GET` | `/api/scans/:id` | full job (status, tool states, summary, logs) |
 | `GET` | `/api/scans/:id/stream` | Server-Sent Events: `status`, `log`, `done` |
-| `GET` | `/api/scans/:id/artifacts/{sbom,grype,grant}.json` | raw tool output |
+| `GET` | `/api/scans/:id/artifacts/{sbom,sbom-spdx,grype,grant}.json` | raw tool output (`sbom.json` is syft's native format, `sbom-spdx.json` an SPDX JSON encoding of the same SBOM) |
 | `GET` | `/healthz`, `/readyz` | liveness/readiness |
 
 ### Harbor Pluggable Scanner Adapter
@@ -341,9 +342,9 @@ Services → Scanners (endpoint URL: `http://<service>:8080`).
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/v1/metadata` | scanner capabilities |
+| `GET` | `/api/v1/metadata` | scanner capabilities: `vulnerability` and `sbom` |
 | `POST` | `/api/v1/scan` | Harbor submits an artifact to scan; returns a scan request `id` |
-| `GET` | `/api/v1/scan/{id}/report` | vulnerability report in Harbor's expected format, sourced from `grype` |
+| `GET` | `/api/v1/scan/{id}/report` | report content-negotiated via `Accept`: the `grype` vulnerability report, or (`Accept: application/vnd.security.sbom.report+json`) the SPDX SBOM, both from the same scan |
 
 ## Known limitations
 
@@ -376,6 +377,8 @@ Services → Scanners (endpoint URL: `http://<service>:8080`).
 - The vulnerability database downloads on first startup (cached under
   `DATA_DIR/grype-db` after that) — scans submitted before `/readyz` reports
   ready will wait for it, up to `TOOL_TIMEOUT_MS`.
-- The Harbor adapter's `GET /api/v1/scan/{id}/report` only returns the
-  `grype` vulnerability report shape; SBOM/license results from the same
-  scan are still available through the WebUI API above.
+- The Harbor adapter's SBOM report is an SPDX JSON encoding of syft's SBOM
+  (`spdxjson`, generated alongside the native one on every scan). License
+  results aren't exposed to Harbor at all - Harbor's Pluggable Scanner Spec
+  has no report type for them - but remain available through the WebUI API
+  above.

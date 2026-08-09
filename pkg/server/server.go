@@ -264,7 +264,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	name := r.PathValue("name")
 
-	allowed := map[string]bool{"sbom.json": true, "grype.json": true, "grant.json": true}
+	allowed := map[string]bool{"sbom.json": true, "sbom-spdx.json": true, "grype.json": true, "grant.json": true}
 	if !allowed[name] {
 		http.Error(w, `{"error":"unknown artifact"}`, http.StatusBadRequest)
 		return
