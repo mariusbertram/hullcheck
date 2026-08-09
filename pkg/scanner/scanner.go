@@ -33,14 +33,14 @@ import (
 
 	"github.com/github/go-spdx/v2/spdxexp"
 
-	"github.com/mariusbertram/anchor-webui/pkg/config"
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/config"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
 )
 
 // appID identifies this binary to grype's DB distribution/installation
 // clients (user agent, cache directory naming) - it never shells out to a
 // syft/grype/grant CLI, everything runs through their Go libraries.
-var appID = clio.Identification{Name: "anchor-webui"}
+var appID = clio.Identification{Name: "hullcheck"}
 
 func envBool(name string, def bool) bool {
 	if v := os.Getenv(name); v != "" {

@@ -12,19 +12,6 @@ function summaryCard(n, label, cls) {
 
 /* ---------------------------------------------------------------- views */
 
-function switchView(name) {
-  document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === name));
-  document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
-  if (name === 'history') loadHistory();
-  if (name === 'settings') loadSettings();
-}
-
-document.querySelectorAll('.tab-btn').forEach((btn) => btn.addEventListener('click', () => switchView(btn.dataset.view)));
-document.querySelectorAll('[data-goto]').forEach((el) => el.addEventListener('click', (e) => {
-  e.preventDefault();
-  switchView(el.dataset.goto);
-}));
-
 document.querySelectorAll('.rtab-btn').forEach((btn) => btn.addEventListener('click', () => {
   document.querySelectorAll('.rtab-btn').forEach((b) => b.classList.toggle('active', b === btn));
   document.querySelectorAll('.rtab').forEach((t) => t.classList.toggle('active', t.id === `rtab-${btn.dataset.rtab}`));
@@ -143,19 +130,6 @@ function subscribeLive(id) {
 document.getElementById('scan-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const image = document.getElementById('image-input').value.trim();
-  const authority = document.getElementById('adv-authority').value.trim();
-  const body = {
-    image,
-    insecureSkipTlsVerify: document.getElementById('adv-insecure-tls').checked,
-    insecureUseHttp: document.getElementById('adv-insecure-http').checked
-  };
-  if (authority) {
-    body.registryAuth = {
-      authority,
-      username: document.getElementById('adv-username').value,
-      password: document.getElementById('adv-password').value
-    };
-  }
 
   const submitBtn = document.getElementById('scan-submit');
   submitBtn.disabled = true;
@@ -163,7 +137,7 @@ document.getElementById('scan-form').addEventListener('submit', async (e) => {
     const res = await fetch('/api/scans', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ image })
     });
     const data = await res.json();
     if (!res.ok) {
@@ -172,6 +146,32 @@ document.getElementById('scan-form').addEventListener('submit', async (e) => {
     }
     resetResultPanel(data);
     subscribeLive(data.id);
+    document.getElementById('scan-result').scrollIntoView({ behavior: 'smooth' });
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+document.getElementById('lookup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('lookup-id-input').value.trim();
+  const errorEl = document.getElementById('lookup-error');
+  errorEl.classList.add('hidden');
+
+  const submitBtn = document.getElementById('lookup-submit');
+  submitBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/scans/${encodeURIComponent(id)}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      errorEl.textContent = data.error || 'Scan not found';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+    const job = await res.json();
+    resetResultPanel(job);
+    renderResultTabs(job);
+    subscribeLive(job.id);
     document.getElementById('scan-result').scrollIntoView({ behavior: 'smooth' });
   } finally {
     submitBtn.disabled = false;
@@ -387,111 +387,3 @@ async function renderLicensesTab(job) {
   });
 }
 
-/* ------------------------------------------------------------- history */
-
-async function loadHistory() {
-  const res = await fetch('/api/scans');
-  const list = await res.json();
-  const tbody = document.getElementById('history-body');
-  tbody.innerHTML = list.map((job) => {
-    const g = job.summary?.grype?.bySeverity || {};
-    const pkgs = job.summary?.syft?.packageCount;
-    return `<tr data-id="${esc(job.id)}" data-image="${esc(job.image)}">
-      <td>${esc(job.image)}</td>
-      <td><span class="badge ${esc(job.status)}">${esc(job.status)}</span></td>
-      <td>${job.startedAt ? new Date(job.startedAt).toLocaleString() : ''}</td>
-      <td class="sev-critical">${g.critical || 0}</td>
-      <td class="sev-high">${g.high || 0}</td>
-      <td>${pkgs ?? ''}</td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="6" class="hint">No scans yet.</td></tr>';
-
-  tbody.querySelectorAll('tr[data-id]').forEach((tr) => {
-    tr.addEventListener('click', async () => {
-      switchView('scan');
-      try {
-        const res = await fetch(`/api/scans/${tr.dataset.id}`);
-        if (res.ok) {
-          const job = await res.json();
-          resetResultPanel(job);
-          renderResultTabs(job);
-          subscribeLive(job.id);
-          return;
-        }
-      } catch (err) {
-        // fallback to minimal job info
-      }
-      resetResultPanel({ id: tr.dataset.id, image: tr.dataset.image, status: 'unknown' });
-      subscribeLive(tr.dataset.id);
-    });
-  });
-}
-
-/* ------------------------------------------------------------- settings */
-
-function addAuthRow(a) {
-  a = a || { authority: '', username: '', password: '', source: 'ui' };
-  const tr = document.createElement('tr');
-  const readonly = a.source === 'mounted-secret';
-  tr.dataset.source = a.source || 'ui';
-  tr.innerHTML = `
-    <td><input type="text" value="${esc(a.authority)}" class="a-authority" ${readonly ? 'disabled' : ''} placeholder="registry.example.com" /></td>
-    <td><input type="text" value="${esc(a.username || '')}" class="a-username" ${readonly ? 'disabled' : ''} /></td>
-    <td><input type="password" value="${esc(a.password || '')}" class="a-password" ${readonly ? 'disabled' : ''} placeholder="unchanged if left as ********" /></td>
-    <td><span class="hint">${readonly ? 'mounted secret' : 'ui'}</span></td>
-    <td>${readonly ? '' : '<button type="button" class="small-btn remove-row">Remove</button>'}</td>
-  `;
-  const removeBtn = tr.querySelector('.remove-row');
-  if (removeBtn) removeBtn.addEventListener('click', () => tr.remove());
-  document.getElementById('auth-body').appendChild(tr);
-}
-
-function renderAuthRows(auths) {
-  document.getElementById('auth-body').innerHTML = '';
-  (auths || []).forEach(addAuthRow);
-}
-
-document.getElementById('add-auth-row').addEventListener('click', () => addAuthRow());
-
-async function loadSettings() {
-  const res = await fetch('/api/config');
-  const cfg = await res.json();
-  document.getElementById('cfg-http-proxy').value = cfg.httpProxy || '';
-  document.getElementById('cfg-https-proxy').value = cfg.httpsProxy || '';
-  document.getElementById('cfg-no-proxy').value = cfg.noProxy || '';
-  document.getElementById('cfg-insecure-tls').checked = !!cfg.insecureSkipTlsVerify;
-  document.getElementById('cfg-insecure-http').checked = !!cfg.insecureUseHttp;
-  renderAuthRows(cfg.registryAuths);
-}
-
-document.getElementById('settings-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const registryAuths = [...document.querySelectorAll('#auth-body tr')]
-    .filter((tr) => tr.dataset.source !== 'mounted-secret')
-    .map((tr) => ({
-      authority: tr.querySelector('.a-authority').value.trim(),
-      username: tr.querySelector('.a-username').value.trim(),
-      password: tr.querySelector('.a-password').value
-    }))
-    .filter((a) => a.authority);
-
-  const body = {
-    httpProxy: document.getElementById('cfg-http-proxy').value.trim(),
-    httpsProxy: document.getElementById('cfg-https-proxy').value.trim(),
-    noProxy: document.getElementById('cfg-no-proxy').value.trim(),
-    insecureSkipTlsVerify: document.getElementById('cfg-insecure-tls').checked,
-    insecureUseHttp: document.getElementById('cfg-insecure-http').checked,
-    registryAuths
-  };
-
-  const res = await fetch('/api/config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  const cfg = await res.json();
-  renderAuthRows(cfg.registryAuths);
-  const saved = document.getElementById('settings-saved');
-  saved.classList.remove('hidden');
-  setTimeout(() => saved.classList.add('hidden'), 2000);
-});

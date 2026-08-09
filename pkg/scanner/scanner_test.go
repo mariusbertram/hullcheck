@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/mariusbertram/anchor-webui/pkg/config"
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/config"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
 )
 
 // testPkgTypeAPK / testSeverityKey are shared literals used across the

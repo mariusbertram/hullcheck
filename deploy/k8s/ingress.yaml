@@ -4,20 +4,20 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: anchor-webui
-  namespace: anchor-webui
+  name: hullcheck
+  namespace: hullcheck
   # annotations:
   #   nginx.ingress.kubernetes.io/whitelist-source-range: 10.0.0.0/8
 spec:
   ingressClassName: nginx
   rules:
-    - host: anchor-webui.example.com
+    - host: hullcheck.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: anchor-webui
+                name: hullcheck
                 port:
                   number: 8080

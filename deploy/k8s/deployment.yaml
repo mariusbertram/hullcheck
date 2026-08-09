@@ -1,30 +1,30 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: anchor-webui
-  namespace: anchor-webui
+  name: hullcheck
+  namespace: hullcheck
   labels:
-    app.kubernetes.io/name: anchor-webui
+    app.kubernetes.io/name: hullcheck
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: anchor-webui
+      app.kubernetes.io/name: hullcheck
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: anchor-webui
+        app.kubernetes.io/name: hullcheck
     spec:
-      serviceAccountName: anchor-webui
+      serviceAccountName: hullcheck
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: anchor-webui
+        - name: hullcheck
           # Build and push this image from the repository Dockerfile, then
           # point it here (see README.md).
-          image: ghcr.io/example/anchor-webui:1.0.0
+          image: ghcr.io/example/hullcheck:1.0.0
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -37,7 +37,7 @@ spec:
               containerPort: 8080
           envFrom:
             - configMapRef:
-                name: anchor-webui
+                name: hullcheck
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 10
@@ -57,13 +57,13 @@ spec:
             - name: data
               mountPath: /data
             - name: pull-secret
-              mountPath: /etc/anchor-webui/pull-secret
+              mountPath: /etc/hullcheck/pull-secret
               readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: anchor-webui-data
+            claimName: hullcheck-data
         - name: pull-secret
           secret:
-            secretName: anchor-webui-pull-secret
+            secretName: hullcheck-pull-secret
             optional: true

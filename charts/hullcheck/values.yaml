@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/example/anchor-webui
+  repository: ghcr.io/example/hullcheck
   tag: ""       # defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 

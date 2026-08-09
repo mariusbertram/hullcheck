@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "anchor-webui.fullname" . }}
+  name: {{ include "hullcheck.fullname" . }}
   labels:
-    {{- include "anchor-webui.labels" . | nindent 4 }}
+    {{- include "hullcheck.labels" . | nindent 4 }}
 data:
   HTTP_PROXY: {{ .Values.config.httpProxy | quote }}
   HTTPS_PROXY: {{ .Values.config.httpsProxy | quote }}
@@ -12,4 +12,4 @@ data:
   TOOL_TIMEOUT_MS: {{ mulf (.Values.config.toolTimeoutSeconds | float64) 1000 | int | quote }}
   MAX_HISTORY: {{ .Values.config.maxHistory | quote }}
   DATA_DIR: "/data"
-  PULL_SECRET_PATH: "/etc/anchor-webui/pull-secret/.dockerconfigjson"
+  PULL_SECRET_PATH: "/etc/hullcheck/pull-secret/.dockerconfigjson"

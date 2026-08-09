@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/mariusbertram/anchor-webui/pkg/config"
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
-	"github.com/mariusbertram/anchor-webui/pkg/scanner"
-	"github.com/mariusbertram/anchor-webui/pkg/server"
+	"github.com/mariusbertram/hullcheck/pkg/config"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/scanner"
+	"github.com/mariusbertram/hullcheck/pkg/server"
 )
 
 //go:embed public/*
@@ -46,7 +46,7 @@ func main() {
 	srv := server.NewServer(cfgMgr, jobsMgr, staticEmbed, runner.IsReady)
 
 	addr := ":" + port
-	log.Printf("⚓ Anchor Server (Go) starting on http://0.0.0.0:%s (Data Dir: %s)", port, dataDir)
+	log.Printf("🚢 Hullcheck Server (Go) starting on http://0.0.0.0:%s (Data Dir: %s)", port, dataDir)
 	log.Printf("  ├─ Web UI: http://localhost:%s", port)
 	log.Printf("  └─ Harbor Scanner Adapter: http://localhost:%s/api/v1/metadata", port)
 

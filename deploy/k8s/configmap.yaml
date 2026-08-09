@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: anchor-webui
-  namespace: anchor-webui
+  name: hullcheck
+  namespace: hullcheck
 data:
   HTTP_PROXY: ""
   HTTPS_PROXY: ""
@@ -11,4 +11,4 @@ data:
   TOOL_TIMEOUT_MS: "900000"
   MAX_HISTORY: "200"
   DATA_DIR: "/data"
-  PULL_SECRET_PATH: "/etc/anchor-webui/pull-secret/.dockerconfigjson"
+  PULL_SECRET_PATH: "/etc/hullcheck/pull-secret/.dockerconfigjson"

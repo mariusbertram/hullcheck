@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mariusbertram/anchor-webui/pkg/config"
-	"github.com/mariusbertram/anchor-webui/pkg/harbor"
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
-	"github.com/mariusbertram/anchor-webui/pkg/validate"
+	"github.com/mariusbertram/hullcheck/pkg/config"
+	"github.com/mariusbertram/hullcheck/pkg/harbor"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/validate"
 )
 
 type Server struct {

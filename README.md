@@ -1,4 +1,4 @@
-# anchor-webui
+# hullcheck
 
 A small WebUI and CVE/SBOM/license scanner built on Anchore's open-source
 [syft](https://github.com/anchore/syft) (SBOM) and
@@ -8,13 +8,15 @@ libraries, not spawned as CLIs — see https://oss.anchore.com/docs/projects/.
 Paste a reference to a container image or OCI artifact, hit scan, and syft
 catalogs it while grype matches the result against its vulnerability
 database; a license summary is derived from the same SBOM. Results (SBOM,
-vulnerability findings, license report) are shown live and kept in a
-searchable history. Registry pull secrets and an HTTP(S) proxy can be
-configured centrally. **The UI has no authentication** and is designed to
-run on Kubernetes/OpenShift.
+vulnerability findings, license report) are shown live, and a past scan can
+be reopened by its ID. The UI intentionally exposes nothing else — no
+settings screen, no browsable history; registry pull secrets and an
+HTTP(S) proxy are configured outside the UI (env vars / mounted Secret / the
+`/api/config` API). **The UI has no authentication** and is designed to run
+on Kubernetes/OpenShift.
 
 A [Harbor Pluggable Scanner Adapter](https://github.com/goharbor/pluggable-scanner-spec)
-(`/api/v1/*`) is built in, so anchor-webui can also be registered as a scanner
+(`/api/v1/*`) is built in, so hullcheck can also be registered as a scanner
 in Harbor and driven directly from Harbor's own vulnerability scanning UI.
 
 ## Architecture
@@ -88,9 +90,8 @@ called from both `ci.yml` and `release.yml` rather than duplicated into each.
   finishing its download), then drives an actual scan of `alpine:3.20`
   through the HTTP API and asserts all three tool states report `success`
   and produce valid SBOM/vulnerability/license JSON; also runs a
-  report-only SBOM + vulnerability scan of that image (findings printed to
-  the job log, not blocking - no GitHub Security tab upload since that
-  needs GitHub Advanced Security, which this repo doesn't have purchased).
+  report-only SBOM + vulnerability scan of that image (Security tab, not
+  blocking).
 
 **Release** lives in `.github/workflows/release.yml` and only runs on `v*`
 tags: `lint` + `test`, then builds/pushes the real multi-arch image, attests
@@ -100,25 +101,25 @@ and standalone `linux/amd64`/`linux/arm64` binaries + checksums.
 
 ## Configuration
 
-Two layers, both editable from the **Settings** page in the UI:
+The UI has no configuration screen — it exposes exactly two actions: start a
+scan and look up a previous scan by ID. Registry credentials, proxy and TLS
+defaults are configured outside the UI:
 
 1. **Defaults**, seeded at startup from environment variables / a mounted
    Secret (see below) and persisted to `DATA_DIR/config.json` after that.
-2. **Per-scan overrides**, entered under "Advanced" on the Scan page for a
-   one-off private image (registry host, username/password or token,
-   skip-TLS-verify / plain-HTTP) — never persisted.
+   They can still be read/updated via the `GET`/`PUT /api/config` API (see
+   [API](#api) below) for scripted or admin use.
+2. **Per-scan overrides** can still be passed to `POST /api/scans` directly
+   (registry host, username/password or token, skip-TLS-verify /
+   plain-HTTP) — never persisted — but there is no UI field for them anymore.
 
-| Setting | Env var (seed only) | UI field |
+| Setting | Env var (seed only) | API field |
 |---|---|---|
-| HTTP proxy | `HTTP_PROXY` | Settings → HTTP proxy |
-| HTTPS proxy | `HTTPS_PROXY` | Settings → HTTP proxy |
-| No-proxy list | `NO_PROXY` | Settings → HTTP proxy |
-| Registry pull secret(s) | mounted `kubernetes.io/dockerconfigjson` Secret at `PULL_SECRET_PATH` | Settings → Registry credentials |
-| Skip TLS verify / plain HTTP | — | Settings → TLS |
-
-Registry credentials from a mounted Secret show up read-only in the UI
-(`source: mounted-secret`) and can't be edited or deleted there — add/edit
-your own on top from the UI, or update the Secret and roll the Deployment.
+| HTTP proxy | `HTTP_PROXY` | `httpProxy` |
+| HTTPS proxy | `HTTPS_PROXY` | `httpsProxy` |
+| No-proxy list | `NO_PROXY` | `noProxy` |
+| Registry pull secret(s) | mounted `kubernetes.io/dockerconfigjson` Secret at `PULL_SECRET_PATH` | `registryAuths` (mounted ones are read-only, `source: mounted-secret`) |
+| Skip TLS verify / plain HTTP | — | `insecureSkipTlsVerify` / `insecureUseHttp` |
 
 Other env vars: `PORT` (8080), `DATA_DIR` (`/data`), `MAX_CONCURRENCY` (2
 parallel scans), `TOOL_TIMEOUT_MS` (900000, applies to each of syft/grype),
@@ -139,8 +140,8 @@ per-job directory to create or clean up.
 ### Build & push the image
 
 ```
-docker build -t <your-registry>/anchor-webui:1.0.0 .
-docker push <your-registry>/anchor-webui:1.0.0
+docker build -t <your-registry>/hullcheck:1.0.0 .
+docker push <your-registry>/hullcheck:1.0.0
 ```
 
 syft/grype are linked into the binary as Go libraries (see `go.mod`), so
@@ -151,14 +152,14 @@ rebuild — there are no separate `--build-arg`s or CLI installs to manage.
 ### Helm (recommended)
 
 ```
-helm install anchor-webui charts/anchor-webui \
-  --set image.repository=<your-registry>/anchor-webui \
+helm install hullcheck charts/hullcheck \
+  --set image.repository=<your-registry>/hullcheck \
   --set image.tag=1.0.0 \
   --set route.enabled=true            # OpenShift
-  # --set ingress.enabled=true --set ingress.host=anchor-webui.example.com   # vanilla k8s
+  # --set ingress.enabled=true --set ingress.host=hullcheck.example.com   # vanilla k8s
 ```
 
-Key values (see `charts/anchor-webui/values.yaml` for the full list):
+Key values (see `charts/hullcheck/values.yaml` for the full list):
 
 - `persistence.*` — PVC for `/data` (scan history + config), or set
   `persistence.enabled=false` for ephemeral/`emptyDir` storage.
@@ -254,7 +255,7 @@ safe to leave off (the defaults) in a cluster with no outbound access:
 ### Harbor Pluggable Scanner Adapter
 
 Implements the [Harbor scanner adapter API](https://github.com/goharbor/pluggable-scanner-spec)
-so anchor-webui can be registered under Harbor → Administration → Interrogation
+so hullcheck can be registered under Harbor → Administration → Interrogation
 Services → Scanners (endpoint URL: `http://<service>:8080`).
 
 | Method | Path | Purpose |

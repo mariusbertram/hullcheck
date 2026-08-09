@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
-	"github.com/mariusbertram/anchor-webui/pkg/validate"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/validate"
 )
 
 type Metadata struct {
@@ -70,7 +70,7 @@ type ArtifactInfo struct {
 
 // scannerName is the Harbor scanner adapter's advertised name, reused in
 // both the metadata endpoint and the vulnerability report's scanner block.
-const scannerName = "Anchor"
+const scannerName = "Hullcheck"
 
 type Handler struct {
 	jobsMgr *jobs.Manager
@@ -84,7 +84,7 @@ func (h *Handler) GetMetadata(w http.ResponseWriter, r *http.Request) {
 	meta := Metadata{
 		Scanner: ScannerInfo{
 			Name:    scannerName,
-			Vendor:  "Anchor WebUI",
+			Vendor:  "Hullcheck",
 			Version: "v1.0.0",
 		},
 		Capabilities: []Capability{
@@ -209,7 +209,7 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 			},
 			Scanner: ScannerInfo{
 				Name:    scannerName,
-				Vendor:  "Anchor WebUI",
+				Vendor:  "Hullcheck",
 				Version: "v1.0.0",
 			},
 			Severity: highestSev,

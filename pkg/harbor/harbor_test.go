@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
 )
 
 func TestHarborMetadata(t *testing.T) {
@@ -31,7 +31,7 @@ func TestHarborMetadata(t *testing.T) {
 	}
 
 	if meta.Scanner.Name != scannerName {
-		t.Errorf("expected scanner name 'Anchor', got '%s'", meta.Scanner.Name)
+		t.Errorf("expected scanner name 'Hullcheck', got '%s'", meta.Scanner.Name)
 	}
 }
 

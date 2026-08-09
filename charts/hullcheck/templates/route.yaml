@@ -2,16 +2,16 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: {{ include "anchor-webui.fullname" . }}
+  name: {{ include "hullcheck.fullname" . }}
   labels:
-    {{- include "anchor-webui.labels" . | nindent 4 }}
+    {{- include "hullcheck.labels" . | nindent 4 }}
 spec:
   {{- if .Values.route.host }}
   host: {{ .Values.route.host }}
   {{- end }}
   to:
     kind: Service
-    name: {{ include "anchor-webui.fullname" . }}
+    name: {{ include "hullcheck.fullname" . }}
   port:
     targetPort: http
   {{- if .Values.route.tls.enabled }}

@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "anchor-webui.fullname" . }}
+  name: {{ include "hullcheck.fullname" . }}
   labels:
-    {{- include "anchor-webui.labels" . | nindent 4 }}
+    {{- include "hullcheck.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -12,4 +12,4 @@ spec:
       protocol: TCP
       name: http
   selector:
-    {{- include "anchor-webui.selectorLabels" . | nindent 4 }}
+    {{- include "hullcheck.selectorLabels" . | nindent 4 }}

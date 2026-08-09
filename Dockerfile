@@ -30,7 +30,7 @@ COPY --chown=1001:0 . .
 # built (e.g. linux/arm64), independent of this stage's own native platform.
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-w -s" -o anchor main.go
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-w -s" -o hullcheck main.go
 
 # Prepare the writable data directory with OpenShift-style arbitrary-UID
 # permissions (GID 0, group=owner); the distroless runtime has no shell to
@@ -62,7 +62,7 @@ RUN mkdir -p /build/data \
 FROM quay.io/hummingbird/static:latest@sha256:e6e00bcc3803b2faf7de0b08af2e1b21b155da6c891e153caafd99999c083ee1
 WORKDIR /app
 
-COPY --from=builder --chown=1001:0 /build/anchor ./anchor
+COPY --from=builder --chown=1001:0 /build/hullcheck ./hullcheck
 COPY --from=builder --chown=1001:0 /build/data /data
 
 ENV PORT=8080 \
@@ -74,5 +74,5 @@ USER 1001:0
 
 # No container-level HEALTHCHECK: the distroless runtime ships no shell or
 # wget to run one. Kubernetes liveness/readiness probes hit /healthz and
-# /readyz directly over HTTP instead (see charts/anchor-webui, deploy/k8s).
-CMD ["/app/anchor"]
+# /readyz directly over HTTP instead (see charts/hullcheck, deploy/k8s).
+CMD ["/app/hullcheck"]
