@@ -1,4 +1,4 @@
-# anchor-webui
+# hullcheck
 
 A small WebUI and CVE/SBOM/license scanner built on Anchore's open-source
 [syft](https://github.com/anchore/syft) (SBOM) and
@@ -16,7 +16,7 @@ HTTP(S) proxy are configured outside the UI (env vars / mounted Secret / the
 on Kubernetes/OpenShift.
 
 A [Harbor Pluggable Scanner Adapter](https://github.com/goharbor/pluggable-scanner-spec)
-(`/api/v1/*`) is built in, so anchor-webui can also be registered as a scanner
+(`/api/v1/*`) is built in, so hullcheck can also be registered as a scanner
 in Harbor and driven directly from Harbor's own vulnerability scanning UI.
 
 ## Architecture
@@ -141,8 +141,8 @@ per-job directory to create or clean up.
 ### Build & push the image
 
 ```
-docker build -t <your-registry>/anchor-webui:1.0.0 .
-docker push <your-registry>/anchor-webui:1.0.0
+docker build -t <your-registry>/hullcheck:1.0.0 .
+docker push <your-registry>/hullcheck:1.0.0
 ```
 
 syft/grype are linked into the binary as Go libraries (see `go.mod`), so
@@ -153,14 +153,14 @@ rebuild — there are no separate `--build-arg`s or CLI installs to manage.
 ### Helm (recommended)
 
 ```
-helm install anchor-webui charts/anchor-webui \
-  --set image.repository=<your-registry>/anchor-webui \
+helm install hullcheck charts/hullcheck \
+  --set image.repository=<your-registry>/hullcheck \
   --set image.tag=1.0.0 \
   --set route.enabled=true            # OpenShift
-  # --set ingress.enabled=true --set ingress.host=anchor-webui.example.com   # vanilla k8s
+  # --set ingress.enabled=true --set ingress.host=hullcheck.example.com   # vanilla k8s
 ```
 
-Key values (see `charts/anchor-webui/values.yaml` for the full list):
+Key values (see `charts/hullcheck/values.yaml` for the full list):
 
 - `persistence.*` — PVC for `/data` (scan history + config), or set
   `persistence.enabled=false` for ephemeral/`emptyDir` storage.
@@ -256,7 +256,7 @@ safe to leave off (the defaults) in a cluster with no outbound access:
 ### Harbor Pluggable Scanner Adapter
 
 Implements the [Harbor scanner adapter API](https://github.com/goharbor/pluggable-scanner-spec)
-so anchor-webui can be registered under Harbor → Administration → Interrogation
+so hullcheck can be registered under Harbor → Administration → Interrogation
 Services → Scanners (endpoint URL: `http://<service>:8080`).
 
 | Method | Path | Purpose |

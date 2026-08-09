@@ -88,17 +88,17 @@ jobs:
           context: .
           push: false
           load: true
-          tags: anchor-webui:ci
+          tags: hullcheck:ci
           cache-from: type=gha,scope=ci
           cache-to: type=gha,mode=max,scope=ci
 
       - name: Start container
         run: |
-          docker run -d --name anchor-webui \
+          docker run -d --name hullcheck \
             -p 8080:8080 \
             -e MAX_CONCURRENCY=1 \
             -e TOOL_TIMEOUT_MS=300000 \
-            anchor-webui:ci
+            hullcheck:ci
           docker ps
 
       - name: Wait for /healthz
@@ -111,7 +111,7 @@ jobs:
             sleep 2
           done
           echo "server did not become healthy in time"
-          docker logs anchor-webui
+          docker logs hullcheck
           exit 1
 
       - name: Wait for /readyz (vulnerability database download)
@@ -124,7 +124,7 @@ jobs:
             sleep 2
           done
           echo "vulnerability database did not become ready in time"
-          docker logs anchor-webui
+          docker logs hullcheck
           exit 1
 
       - name: Run a real scan through the API (syft + grype, in-process)
@@ -173,11 +173,11 @@ jobs:
 
       - name: Container logs (always, for debugging)
         if: always()
-        run: docker logs anchor-webui || true
+        run: docker logs hullcheck || true
 
       - name: Stop container
         if: always()
-        run: docker rm -f anchor-webui || true
+        run: docker rm -f hullcheck || true
 
       # Report-only here (fail-build: false, attest: false): this image was
       # only built locally for verification and never pushed, so there's
@@ -187,7 +187,7 @@ jobs:
       - name: SBOM + vulnerability scan (report only)
         uses: ./.github/actions/sbom-scan-attest
         with:
-          image-ref: anchor-webui:ci
-          artifact-name: anchor-webui-ci
+          image-ref: hullcheck:ci
+          artifact-name: hullcheck-ci
           attest: "false"
           fail-build: "false"

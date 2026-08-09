@@ -1,5 +1,5 @@
 services:
-  anchor-webui:
+  hullcheck:
     build: .
     ports:
       - "8080:8080"
@@ -11,10 +11,10 @@ services:
       # - HTTPS_PROXY=http://proxy.example.com:3128
       # - NO_PROXY=localhost,127.0.0.1
     volumes:
-      - anchor-webui-data:/data
+      - hullcheck-data:/data
       # Optionally seed default registry credentials from a pre-built
       # ~/.docker/config.json-style secret:
-      # - ./pull-secret.dockerconfigjson:/etc/anchor-webui/pull-secret/.dockerconfigjson:ro
+      # - ./pull-secret.dockerconfigjson:/etc/hullcheck/pull-secret/.dockerconfigjson:ro
 
 volumes:
-  anchor-webui-data:
+  hullcheck-data:

@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "anchor-webui.fullname" . }}
+  name: {{ include "hullcheck.fullname" . }}
   labels:
-    {{- include "anchor-webui.labels" . | nindent 4 }}
+    {{- include "hullcheck.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "anchor-webui.selectorLabels" . | nindent 6 }}
+      {{- include "hullcheck.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "anchor-webui.selectorLabels" . | nindent 8 }}
+        {{- include "hullcheck.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -21,7 +21,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "anchor-webui.serviceAccountName" . }}
+      serviceAccountName: {{ include "hullcheck.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -29,7 +29,7 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: anchor-webui
+        - name: hullcheck
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
@@ -40,7 +40,7 @@ spec:
               protocol: TCP
           envFrom:
             - configMapRef:
-                name: {{ include "anchor-webui.fullname" . }}
+                name: {{ include "hullcheck.fullname" . }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -60,7 +60,7 @@ spec:
               mountPath: /data
             {{- if or .Values.pullSecret.existingSecret .Values.pullSecret.create }}
             - name: pull-secret
-              mountPath: /etc/anchor-webui/pull-secret
+              mountPath: /etc/hullcheck/pull-secret
               readOnly: true
             {{- end }}
             {{- if .Values.extraEmptyDirTmp }}
@@ -71,14 +71,14 @@ spec:
         - name: data
           {{- if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "anchor-webui.fullname" .)) }}
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "hullcheck.fullname" .)) }}
           {{- else }}
           emptyDir: {}
           {{- end }}
         {{- if or .Values.pullSecret.existingSecret .Values.pullSecret.create }}
         - name: pull-secret
           secret:
-            secretName: {{ .Values.pullSecret.existingSecret | default (printf "%s-pull-secret" (include "anchor-webui.fullname" .)) }}
+            secretName: {{ .Values.pullSecret.existingSecret | default (printf "%s-pull-secret" (include "hullcheck.fullname" .)) }}
         {{- end }}
         {{- if .Values.extraEmptyDirTmp }}
         - name: tmp

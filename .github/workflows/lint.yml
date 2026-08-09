@@ -61,25 +61,25 @@ jobs:
           version: "v3.21.3"
 
       - name: helm lint
-        run: helm lint charts/anchor-webui
+        run: helm lint charts/hullcheck
 
       - name: helm template (default values)
-        run: helm template anchor-webui charts/anchor-webui > /dev/null
+        run: helm template hullcheck charts/hullcheck > /dev/null
 
       - name: helm template (route + persistence disabled)
         run: |
-          helm template anchor-webui charts/anchor-webui \
+          helm template hullcheck charts/hullcheck \
             --set route.enabled=true \
-            --set route.host=anchor-webui.apps.example.com \
+            --set route.host=hullcheck.apps.example.com \
             --set persistence.enabled=false \
             --set extraEmptyDirTmp=true \
             --set securityContext.readOnlyRootFilesystem=true > /dev/null
 
       - name: helm template (ingress + created pull secret)
         run: |
-          helm template anchor-webui charts/anchor-webui \
+          helm template hullcheck charts/hullcheck \
             --set ingress.enabled=true \
-            --set ingress.host=anchor-webui.example.com \
+            --set ingress.host=hullcheck.example.com \
             --set pullSecret.create=true \
             --set-json 'pullSecret.dockerconfigjson="{\"auths\":{}}"' > /dev/null
 

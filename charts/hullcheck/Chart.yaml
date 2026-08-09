@@ -1,5 +1,5 @@
 apiVersion: v2
-name: anchor-webui
+name: hullcheck
 description: WebUI to scan container images / OCI artifacts with Anchore syft, grype and grant
 type: application
 version: 0.1.0

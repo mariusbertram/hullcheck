@@ -100,7 +100,7 @@ func mountedPullSecretPath() string {
 	if p := os.Getenv("PULL_SECRET_PATH"); p != "" {
 		return p
 	}
-	return "/etc/anchor-webui/pull-secret/.dockerconfigjson"
+	return "/etc/hullcheck/pull-secret/.dockerconfigjson"
 }
 
 func (m *Manager) loadMountedAuths() {

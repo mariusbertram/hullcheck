@@ -1,4 +1,4 @@
-anchor-webui has been deployed.
+hullcheck has been deployed.
 
 {{- if .Values.route.enabled }}
 It is exposed via an OpenShift Route:
@@ -8,7 +8,7 @@ It is exposed via an Ingress:
   http(s)://{{ .Values.ingress.host | default "<configure ingress.host>" }}
 {{- else }}
 No Route/Ingress is enabled. Reach it from inside the cluster:
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "anchor-webui.fullname" . }} 8080:{{ .Values.service.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "hullcheck.fullname" . }} 8080:{{ .Values.service.port }}
 then open http://localhost:8080
 {{- end }}
 

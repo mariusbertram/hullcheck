@@ -92,7 +92,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
           labels: |
-            org.opencontainers.image.title=anchor-webui
+            org.opencontainers.image.title=hullcheck
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
@@ -114,7 +114,7 @@ jobs:
         uses: ./.github/actions/sbom-scan-attest
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
-          artifact-name: anchor-webui
+          artifact-name: hullcheck
 
   # ── 3. GitHub Release ─────────────────────────────────────────────────────
   github-release:
@@ -140,7 +140,7 @@ jobs:
           mkdir -p dist
           VERSION="${GITHUB_REF_NAME#v}"
           for arch in amd64 arm64; do
-            out="anchor-webui_${VERSION}_linux_${arch}"
+            out="hullcheck_${VERSION}_linux_${arch}"
             GOOS=linux GOARCH="${arch}" CGO_ENABLED=0 go build \
               -ldflags="-s -w" \
               -o "dist/${out}" .
@@ -168,12 +168,12 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: "anchor-webui ${{ github.ref_name }}"
+          name: "hullcheck ${{ github.ref_name }}"
           files: |
             dist/*.tar.gz
             dist/checksums.txt
           body: |
-            ## anchor-webui ${{ github.ref_name }}
+            ## hullcheck ${{ github.ref_name }}
 
             ### Container image (multi-arch: linux/amd64, linux/arm64)
 
@@ -192,7 +192,7 @@ jobs:
 
             ### Release binaries
 
-            - `anchor-webui` binaries for `linux/amd64` and `linux/arm64` are attached to this release.
+            - `hullcheck` binaries for `linux/amd64` and `linux/arm64` are attached to this release.
             - Verify downloads with `checksums.txt`.
 
             ### Changes

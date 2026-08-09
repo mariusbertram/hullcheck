@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/anchore/go-logger"
-	"github.com/mariusbertram/anchor-webui/pkg/jobs"
+	"github.com/mariusbertram/hullcheck/pkg/jobs"
 )
 
 type jobLogger struct {

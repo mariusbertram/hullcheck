@@ -4,12 +4,12 @@
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
-  name: anchor-webui
-  namespace: anchor-webui
+  name: hullcheck
+  namespace: hullcheck
 spec:
   to:
     kind: Service
-    name: anchor-webui
+    name: hullcheck
   port:
     targetPort: http
   tls:

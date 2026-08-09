@@ -1,4 +1,4 @@
-module github.com/mariusbertram/anchor-webui
+module github.com/mariusbertram/hullcheck
 
 go 1.26.3
 

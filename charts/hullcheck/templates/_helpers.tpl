@@ -1,8 +1,8 @@
-{{- define "anchor-webui.name" -}}
+{{- define "hullcheck.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "anchor-webui.fullname" -}}
+{{- define "hullcheck.fullname" -}}
 {{- if .Values.fullnameOverride -}}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- else -}}
@@ -15,27 +15,27 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "anchor-webui.chart" -}}
+{{- define "hullcheck.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "anchor-webui.labels" -}}
-helm.sh/chart: {{ include "anchor-webui.chart" . }}
-{{ include "anchor-webui.selectorLabels" . }}
+{{- define "hullcheck.labels" -}}
+helm.sh/chart: {{ include "hullcheck.chart" . }}
+{{ include "hullcheck.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{- define "anchor-webui.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "anchor-webui.name" . }}
+{{- define "hullcheck.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "hullcheck.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
-{{- define "anchor-webui.serviceAccountName" -}}
+{{- define "hullcheck.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
-{{- default (include "anchor-webui.fullname" .) .Values.serviceAccount.name -}}
+{{- default (include "hullcheck.fullname" .) .Values.serviceAccount.name -}}
 {{- else -}}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
