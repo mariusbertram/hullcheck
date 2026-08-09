@@ -77,6 +77,7 @@ jobs:
     needs: [lint, test]
     permissions:
       contents: read
+      security-events: write # upload Grype SARIF to the Security tab
     steps:
       - uses: actions/checkout@v7
 
@@ -181,13 +182,14 @@ jobs:
 
       # Report-only here (fail-build: false, attest: false): this image was
       # only built locally for verification and never pushed, so there's
-      # nothing for cosign to attest against. Findings are printed to the
-      # job log for visibility. The real, blocking gate is release.yml,
+      # nothing for cosign to attest against. Findings still land in the
+      # Security tab for visibility. The real, blocking gate is release.yml,
       # which scans the actual pushed multi-arch image before it's signed.
       - name: SBOM + vulnerability scan (report only)
         uses: ./.github/actions/sbom-scan-attest
         with:
           image-ref: hullcheck:ci
           artifact-name: hullcheck-ci
+          sarif-category: hullcheck-image-ci
           attest: "false"
           fail-build: "false"

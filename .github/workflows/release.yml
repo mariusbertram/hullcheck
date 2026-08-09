@@ -60,7 +60,8 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write # cosign keyless (OIDC) SBOM attestation
+      id-token: write        # cosign keyless (OIDC) SBOM attestation
+      security-events: write # upload Grype SARIF to the Security tab
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
@@ -115,6 +116,7 @@ jobs:
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           artifact-name: hullcheck
+          sarif-category: hullcheck-image
 
   # ── 3. GitHub Release ─────────────────────────────────────────────────────
   github-release:
