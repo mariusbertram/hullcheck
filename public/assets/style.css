@@ -35,9 +35,7 @@ body {
 
 .brand { font-weight: 600; font-size: 1.1rem; }
 
-.tabs { display: flex; gap: 6px; }
-
-.tab-btn, .rtab-btn {
+.rtab-btn {
   background: transparent;
   border: 1px solid transparent;
   color: var(--muted);
@@ -47,8 +45,8 @@ body {
   font-size: 0.95rem;
 }
 
-.tab-btn:hover, .rtab-btn:hover { color: var(--text); }
-.tab-btn.active, .rtab-btn.active { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+.rtab-btn:hover { color: var(--text); }
+.rtab-btn.active { background: var(--panel-2); color: var(--text); border-color: var(--border); }
 
 main { max-width: 1000px; margin: 0 auto; padding: 24px; }
 
@@ -81,7 +79,7 @@ input[type=text], input[type=password] {
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
 
-button[type=submit], #add-auth-row {
+button[type=submit] {
   background: var(--accent);
   color: #05121f;
   border: none;
@@ -90,13 +88,10 @@ button[type=submit], #add-auth-row {
   font-weight: 600;
   cursor: pointer;
 }
-#add-auth-row { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
 button[type=submit]:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .hint { color: var(--muted); font-size: 0.85rem; }
 .hidden { display: none !important; }
-
-details summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
 
 .result-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px; }
 .badge {
@@ -141,8 +136,6 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--bor
 th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
 tr:hover td { background: rgba(255,255,255,0.02); }
 
-.history-table tr { cursor: pointer; }
-
 .sev-critical { color: var(--crit); font-weight: 700; }
 .sev-high { color: var(--err); font-weight: 700; }
 .sev-medium { color: var(--warn); font-weight: 700; }
@@ -152,13 +145,6 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 .summary-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 18px; min-width: 120px; }
 .summary-card .n { font-size: 1.6rem; font-weight: 700; }
 .summary-card .l { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; }
-
-.actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
-
-.auth-table input { width: 100%; }
-.auth-table td { vertical-align: middle; }
-.small-btn { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
-.small-btn:hover { color: var(--err); border-color: var(--err); }
 
 a { color: var(--accent); }
 

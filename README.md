@@ -8,10 +8,12 @@ libraries, not spawned as CLIs — see https://oss.anchore.com/docs/projects/.
 Paste a reference to a container image or OCI artifact, hit scan, and syft
 catalogs it while grype matches the result against its vulnerability
 database; a license summary is derived from the same SBOM. Results (SBOM,
-vulnerability findings, license report) are shown live and kept in a
-searchable history. Registry pull secrets and an HTTP(S) proxy can be
-configured centrally. **The UI has no authentication** and is designed to
-run on Kubernetes/OpenShift.
+vulnerability findings, license report) are shown live, and a past scan can
+be reopened by its ID. The UI intentionally exposes nothing else — no
+settings screen, no browsable history; registry pull secrets and an
+HTTP(S) proxy are configured outside the UI (env vars / mounted Secret / the
+`/api/config` API). **The UI has no authentication** and is designed to run
+on Kubernetes/OpenShift.
 
 A [Harbor Pluggable Scanner Adapter](https://github.com/goharbor/pluggable-scanner-spec)
 (`/api/v1/*`) is built in, so anchor-webui can also be registered as a scanner
@@ -100,25 +102,25 @@ and standalone `linux/amd64`/`linux/arm64` binaries + checksums.
 
 ## Configuration
 
-Two layers, both editable from the **Settings** page in the UI:
+The UI has no configuration screen — it exposes exactly two actions: start a
+scan and look up a previous scan by ID. Registry credentials, proxy and TLS
+defaults are configured outside the UI:
 
 1. **Defaults**, seeded at startup from environment variables / a mounted
    Secret (see below) and persisted to `DATA_DIR/config.json` after that.
-2. **Per-scan overrides**, entered under "Advanced" on the Scan page for a
-   one-off private image (registry host, username/password or token,
-   skip-TLS-verify / plain-HTTP) — never persisted.
+   They can still be read/updated via the `GET`/`PUT /api/config` API (see
+   [API](#api) below) for scripted or admin use.
+2. **Per-scan overrides** can still be passed to `POST /api/scans` directly
+   (registry host, username/password or token, skip-TLS-verify /
+   plain-HTTP) — never persisted — but there is no UI field for them anymore.
 
-| Setting | Env var (seed only) | UI field |
+| Setting | Env var (seed only) | API field |
 |---|---|---|
-| HTTP proxy | `HTTP_PROXY` | Settings → HTTP proxy |
-| HTTPS proxy | `HTTPS_PROXY` | Settings → HTTP proxy |
-| No-proxy list | `NO_PROXY` | Settings → HTTP proxy |
-| Registry pull secret(s) | mounted `kubernetes.io/dockerconfigjson` Secret at `PULL_SECRET_PATH` | Settings → Registry credentials |
-| Skip TLS verify / plain HTTP | — | Settings → TLS |
-
-Registry credentials from a mounted Secret show up read-only in the UI
-(`source: mounted-secret`) and can't be edited or deleted there — add/edit
-your own on top from the UI, or update the Secret and roll the Deployment.
+| HTTP proxy | `HTTP_PROXY` | `httpProxy` |
+| HTTPS proxy | `HTTPS_PROXY` | `httpsProxy` |
+| No-proxy list | `NO_PROXY` | `noProxy` |
+| Registry pull secret(s) | mounted `kubernetes.io/dockerconfigjson` Secret at `PULL_SECRET_PATH` | `registryAuths` (mounted ones are read-only, `source: mounted-secret`) |
+| Skip TLS verify / plain HTTP | — | `insecureSkipTlsVerify` / `insecureUseHttp` |
 
 Other env vars: `PORT` (8080), `DATA_DIR` (`/data`), `MAX_CONCURRENCY` (2
 parallel scans), `TOOL_TIMEOUT_MS` (900000, applies to each of syft/grype),
