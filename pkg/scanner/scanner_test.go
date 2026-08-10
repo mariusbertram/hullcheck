@@ -2,10 +2,12 @@ package scanner
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/mariusbertram/hullcheck/pkg/config"
 	"github.com/mariusbertram/hullcheck/pkg/jobs"
@@ -120,4 +122,56 @@ func TestSummarizeGrant(t *testing.T) {
 	if summary.LicenseCounts["MIT"] != 2 || summary.LicenseCounts["Apache-2.0"] != 1 {
 		t.Errorf("unexpected license counts: %+v", summary.LicenseCounts)
 	}
+}
+
+// TestNewRunnerBoundsGolangLicenseFetchTimeout guards against a regression
+// where syft's Go-module remote-license lookup could hang indefinitely
+// (see setGolangLicenseFetchTimeout's doc comment): syft calls the bare
+// http.Get for each module - http.DefaultClient.Get under the hood - and
+// never threads the scan's own context into it, so http.DefaultClient.Timeout
+// is the only lever that bounds it. NewRunner must set a non-zero timeout
+// (http.Client's zero value means "no timeout") whenever
+// GOLANG_SEARCH_REMOTE_LICENSES is enabled (the default), and must respect
+// GOLANG_LICENSE_LOOKUP_TIMEOUT_MS when it's set.
+func TestNewRunnerBoundsGolangLicenseFetchTimeout(t *testing.T) {
+	original := http.DefaultClient.Timeout
+	t.Cleanup(func() { http.DefaultClient.Timeout = original })
+
+	t.Run("default", func(t *testing.T) {
+		http.DefaultClient.Timeout = 0
+		tmpDir := t.TempDir()
+		cfgMgr, _ := config.NewManager(tmpDir)
+		jobsMgr, _ := jobs.NewManager(tmpDir)
+		NewRunner(cfgMgr, jobsMgr, tmpDir)
+
+		if http.DefaultClient.Timeout <= 0 {
+			t.Errorf("expected a non-zero default timeout, got %s", http.DefaultClient.Timeout)
+		}
+	})
+
+	t.Run("configured via env var", func(t *testing.T) {
+		http.DefaultClient.Timeout = 0
+		t.Setenv("GOLANG_LICENSE_LOOKUP_TIMEOUT_MS", "5000")
+		tmpDir := t.TempDir()
+		cfgMgr, _ := config.NewManager(tmpDir)
+		jobsMgr, _ := jobs.NewManager(tmpDir)
+		NewRunner(cfgMgr, jobsMgr, tmpDir)
+
+		if want := 5 * time.Second; http.DefaultClient.Timeout != want {
+			t.Errorf("expected timeout %s, got %s", want, http.DefaultClient.Timeout)
+		}
+	})
+
+	t.Run("left unbounded when remote license search is disabled", func(t *testing.T) {
+		http.DefaultClient.Timeout = 0
+		t.Setenv("GOLANG_SEARCH_REMOTE_LICENSES", "false")
+		tmpDir := t.TempDir()
+		cfgMgr, _ := config.NewManager(tmpDir)
+		jobsMgr, _ := jobs.NewManager(tmpDir)
+		NewRunner(cfgMgr, jobsMgr, tmpDir)
+
+		if http.DefaultClient.Timeout != 0 {
+			t.Errorf("expected http.DefaultClient.Timeout to be left untouched, got %s", http.DefaultClient.Timeout)
+		}
+	})
 }

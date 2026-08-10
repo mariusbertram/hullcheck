@@ -146,7 +146,9 @@ parallel scans per pod), `TOOL_TIMEOUT_MS` (900000, applies to each of
 syft/grype), `MAX_HISTORY` (200 scans kept), `QUEUE_POLL_INTERVAL_MS` (2000
 - how often a pod checks `DATA_DIR/queue` for a job another pod hasn't
 gotten to yet; see [Scaling](#scaling)), `GRYPE_DB_AUTO_UPDATE` (`true`),
-`GOLANG_SEARCH_REMOTE_LICENSES` (`true`), `VEX_LOOKUP_ENABLED` (`true`) — see
+`GOLANG_SEARCH_REMOTE_LICENSES` (`true`), `GOLANG_LICENSE_LOOKUP_TIMEOUT_MS`
+(10000 - per-HTTP-call bound on syft's Go-module remote license fetch, which
+otherwise has none at all), `VEX_LOOKUP_ENABLED` (`true`) — see
 [Air-gapped / offline deployment](#air-gapped--offline-deployment) and
 [VEX attestations](#vex-attestations) below for what these control and why
 they default the way they do. `TMPDIR` defaults to `DATA_DIR/tmp` (scratch
@@ -327,11 +329,18 @@ outbound access:
   doesn't honor cancellation from the scan's own `TOOL_TIMEOUT_MS` context —
   on a network that silently drops packets instead of actively refusing
   them (common with restrictive `NetworkPolicy`/firewall setups, not just
-  fully air-gapped ones), a scan of a Go-heavy image can hang far longer
-  than the configured tool timeout. If you haven't confirmed egress to a Go
-  proxy works, disable it. It also adds real time even when it works (tens
-  of seconds for a few hundred unique modules, since each is a separate
-  proxy round-trip).
+  fully air-gapped ones), every unique third-party module in the image
+  hits that same unbounded call. hullcheck bounds it from the outside with
+  `GOLANG_LICENSE_LOOKUP_TIMEOUT_MS` (default `10000`, i.e. 10s per HTTP
+  call - syft retries once with a lowercased module name on a non-200, so
+  up to two calls per module) since syft itself won't, but that's a safety
+  net against an indefinite hang, not a fast path: an image with many
+  unreachable-proxy modules still adds up to real time (tens of seconds to
+  a few minutes) before falling back to no license data for those modules.
+  If you haven't confirmed egress to a Go proxy works, disable
+  `GOLANG_SEARCH_REMOTE_LICENSES` outright rather than relying on the
+  timeout alone - Harbor gives up polling `GetReport` well before a scan
+  stuck retrying that timeout across a few hundred modules would finish.
 
   This is a separate `GOPROXY` from the build-time one above - that one only
   controls fetching *this repo's own* dependencies while compiling the
@@ -420,6 +429,15 @@ headers)`), leaving the scan stuck "not ready" from Harbor's perspective
 even though it had actually finished. Scan history predating this still
 works - `GetReport` falls back to building the report on the fly if
 `grype-harbor.json` isn't there.
+
+The vulnerability report response body is the `HarborVulnerabilityReport`
+object directly at the top level (`generated_at`/`artifact`/`scanner`/
+`severity`/`vulnerabilities` as direct JSON keys), per the Pluggable
+Scanner Spec's OpenAPI schema - not wrapped in an object keyed by the mime
+type. An earlier version of this code did wrap it that way; Harbor's own
+decoder read the resulting body as an all-zero-value report rather than
+erroring, so a scan that found real vulnerabilities showed up clean in
+Harbor's UI with no indication anything was wrong.
 
 ## VEX attestations
 

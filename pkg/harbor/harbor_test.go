@@ -194,13 +194,18 @@ func TestHarborGetReportVulnerabilityFallback(t *testing.T) {
 		t.Fatalf("expected status 200, got %d: %s", reportRec.Code, reportRec.Body.String())
 	}
 
-	var envelope map[string]VulnerabilityReport
-	if err := json.Unmarshal(reportRec.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("failed to decode envelope: %v", err)
+	// Per the Pluggable Scanner Spec's OpenAPI schema (HarborVulnerabilityReport),
+	// the response body IS the report object at the top level - not wrapped
+	// in an object keyed by the mime type (see EncodeVulnerabilityReport's
+	// doc comment for the regression this guards against: Harbor's own
+	// decoder would silently read a wrapped body as an all-zero-value
+	// report - no vulnerabilities - rather than erroring).
+	var report VulnerabilityReport
+	if err := json.Unmarshal(reportRec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode report: %v", err)
 	}
-	report, ok := envelope[mimeTypeVulnGeneric]
-	if !ok || len(report.Vulns) != 1 || report.Vulns[0].ID != "CVE-2024-0001" {
-		t.Fatalf("expected one CVE-2024-0001 finding, got %+v", envelope)
+	if len(report.Vulns) != 1 || report.Vulns[0].ID != "CVE-2024-0001" {
+		t.Fatalf("expected one CVE-2024-0001 finding, got %+v", report)
 	}
 	if report.Severity != severityHigh {
 		t.Errorf("expected highest severity %q, got %q", severityHigh, report.Severity)
@@ -248,6 +253,16 @@ func TestHarborGetReportVulnerabilityPrecomputed(t *testing.T) {
 	}
 	if reportRec.Body.String() != string(precomputed) {
 		t.Errorf("expected the precomputed artifact to be served byte-for-byte, got %s", reportRec.Body.String())
+	}
+
+	// Same top-level-shape guard as TestHarborGetReportVulnerabilityFallback,
+	// against the precomputed path this time.
+	var report VulnerabilityReport
+	if err := json.Unmarshal(reportRec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode report: %v", err)
+	}
+	if len(report.Vulns) != 1 || report.Vulns[0].ID != "CVE-2024-9999" {
+		t.Fatalf("expected one CVE-2024-9999 finding, got %+v", report)
 	}
 }
 
