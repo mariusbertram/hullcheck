@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -96,6 +97,16 @@ func NewRunner(cfgMgr *config.Manager, jobsMgr *jobs.Manager, dataDir string) *R
 	vexLookupEnabled := envBool("VEX_LOOKUP_ENABLED", true)
 	dbAutoUpdate := envBool("GRYPE_DB_AUTO_UPDATE", true)
 
+	golangLicenseFetchTimeout := 10 * time.Second
+	if v := os.Getenv("GOLANG_LICENSE_LOOKUP_TIMEOUT_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			golangLicenseFetchTimeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+	if golangSearchRemoteLicenses {
+		setGolangLicenseFetchTimeout(golangLicenseFetchTimeout)
+	}
+
 	r := &Runner{
 		cfgManager:                 cfgMgr,
 		jobsMgr:                    jobsMgr,
@@ -106,10 +117,37 @@ func NewRunner(cfgMgr *config.Manager, jobsMgr *jobs.Manager, dataDir string) *R
 	}
 
 	jobsMgr.SetRunner(r.RunScan)
-	log.Printf("scanner: runner ready (toolTimeout=%s, golangSearchRemoteLicenses=%t, vexLookupEnabled=%t), loading vulnerability database in background (autoUpdate=%t)",
-		toolTimeout, golangSearchRemoteLicenses, vexLookupEnabled, dbAutoUpdate)
+	log.Printf("scanner: runner ready (toolTimeout=%s, golangSearchRemoteLicenses=%t, golangLicenseFetchTimeout=%s, vexLookupEnabled=%t), loading vulnerability database in background (autoUpdate=%t)",
+		toolTimeout, golangSearchRemoteLicenses, golangLicenseFetchTimeout, vexLookupEnabled, dbAutoUpdate)
 	go r.loadVulnerabilityDB(dataDir, dbAutoUpdate)
 	return r
+}
+
+// setGolangLicenseFetchTimeout bounds http.DefaultClient's Timeout so
+// syft's Go-module remote-license lookup (golang.CatalogerConfig's
+// SearchRemoteLicenses, enabled via GOLANG_SEARCH_REMOTE_LICENSES above)
+// can't hang indefinitely. syft's own implementation (as of syft v1.50.0,
+// syft/pkg/cataloger/golang/licenses.go's getModuleProxy) calls the bare
+// http.Get - which is http.DefaultClient.Get under the hood - for each
+// module it needs a license for, and never threads the scan's own context
+// into that call, so it's immune to both TOOL_TIMEOUT_MS and to canceling
+// the scan (see the README's air-gapped deployment section). On a network
+// that can't reach the configured Go proxy - GOPROXY left at its public
+// default on a restricted-egress cluster, or a NetworkPolicy that silently
+// drops packets instead of refusing the connection outright - every unique
+// third-party module in the image being scanned hits this same unbounded
+// hang (up to two sequential calls per module, per getModuleProxy's
+// mixed-case-retry), which in practice left scans of otherwise small,
+// dependency-heavy Go binaries (e.g. a single compiled operator image)
+// stuck for many minutes with no way to time out.
+//
+// http.DefaultClient is otherwise unused by this binary for anything that
+// needs a longer budget: image pulls (go-containerregistry, via
+// stereoscope) and the grype vulnerability database client each build
+// their own *http.Client with an explicit Timeout rather than falling back
+// to the package-level default, so this doesn't affect either of them.
+func setGolangLicenseFetchTimeout(d time.Duration) {
+	http.DefaultClient.Timeout = d
 }
 
 // loadVulnerabilityDB opens the grype vulnerability database once at
