@@ -27,6 +27,7 @@ function resetResultPanel(job) {
   currentJob = job;
   document.getElementById('scan-result').classList.remove('hidden');
   document.getElementById('result-image').textContent = job.image;
+  document.getElementById('result-id').textContent = `Scan ID: ${job.id}`;
   document.getElementById('log-output').textContent = '';
   document.getElementById('rtab-vulns').innerHTML = '<p class="hint">Waiting for grype to finish&hellip;</p>';
   document.getElementById('rtab-sbom').innerHTML = '<p class="hint">Waiting for syft to finish&hellip;</p>';

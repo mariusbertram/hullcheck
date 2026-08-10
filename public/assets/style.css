@@ -91,6 +91,7 @@ button[type=submit] {
 button[type=submit]:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .hint { color: var(--muted); font-size: 0.85rem; }
+#result-id { margin-left: 8px; }
 .hidden { display: none !important; }
 
 .result-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px; }
