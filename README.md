@@ -261,6 +261,30 @@ exits after any scan it's still running locally has finished (bounded by
 that's already running - only ever one that's still queued and pinned to a
 now-dead pod via the ad-hoc-credentials exception above.
 
+**Every status/report read stays off disk while a scan is running.**
+Harbor's own HTTP client to a scanner adapter uses a hardcoded 5-second
+per-request timeout (`goharbor/harbor`'s `pkg/scan/rest/v1/client.go`) - not
+configurable, and much tighter than its own ~30-minute overall polling
+budget per report type. Any single response over that bar is treated as a
+failure, not "still not ready." The reference adapters handle this by
+keeping every status/report read in memory, decoupled from however slow the
+actual scan is - Anchore's own `harbor-scanner-adapter` uses a plain
+`map[string]VulnerabilityResult` + mutex; Trivy's uses Redis. hullcheck does
+the same thing structurally: `jobs.Manager.GetJob`/`IsLocal` only ever touch
+the in-memory `jobs` map under a lock that's never held across a syscall -
+every state-changing call (`SetToolStatus`, `AppendLog`, ...) mutates that
+map, marshals whatever needs writing, and hands the actual disk write off
+to a single background worker (`enqueuePersist`) before releasing the lock,
+rather than writing to `DATA_DIR` synchronously while holding it. Without
+this, a burst of log lines during an active scan (`AppendLog` fires on
+every syft/grype log line) plus any latency on the shared PVC (NFS
+contention from concurrent scans, most likely) could make an unrelated
+`GetReport` poll stall past that 5s ceiling. `GetReport`'s "not ready"
+response also sets `Refresh-After` (`pluggable-scanner-spec`'s OpenAPI
+schema) so Harbor paces retries at `notReadyRefreshAfterSeconds` (20s)
+instead of its own 5s default, cutting poll volume roughly 4x on top of
+that.
+
 This doesn't (yet) extend to `config.Manager` (the Settings page - proxy,
 registry credentials, etc.): it also caches in memory per pod, but unlike
 jobs, a config change made through one pod isn't picked up by others until

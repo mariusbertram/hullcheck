@@ -1,10 +1,12 @@
 package harbor
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -266,6 +268,60 @@ func TestHarborGetReportVulnerabilityPrecomputed(t *testing.T) {
 	}
 }
 
+// TestHarborGetReportSetsRefreshAfterHeader guards Harbor's own retry
+// pacing: while a scan is still queued/running, GetReport must respond 302
+// with a Refresh-After header (see writeNotReady) so Harbor's scan job
+// paces its next poll at notReadyRefreshAfterSeconds - left unset, Harbor
+// falls back to a hardcoded 5s default, which is what drove GetReport's
+// poll volume (and, combined with any latency on the shared PVC, its risk
+// of blowing Harbor's own 5s-per-call client timeout) before this existed.
+func TestHarborGetReportSetsRefreshAfterHeader(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobsMgr, err := jobs.NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	handler := NewHandler(jobsMgr)
+
+	block := make(chan struct{})
+	started := make(chan struct{})
+	jobsMgr.SetRunner(func(job *jobs.Job, regAuth map[string]string) {
+		close(started)
+		<-block
+	})
+
+	req := httptest.NewRequest("POST", "/api/v1/scan", strings.NewReader(scanBodyAlpine))
+	rec := httptest.NewRecorder()
+	handler.AcceptScan(rec, req)
+
+	var res ScanResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		close(block)
+		t.Fatal("scan never started")
+	}
+
+	reportReq := httptest.NewRequest("GET", "/api/v1/scan/"+res.ID+"/report", nil)
+	reportRec := httptest.NewRecorder()
+	handler.GetReport(reportRec, reportReq, res.ID)
+
+	if reportRec.Code != http.StatusFound {
+		close(block)
+		t.Fatalf("expected status 302, got %d", reportRec.Code)
+	}
+	if got, want := reportRec.Header().Get(refreshAfterHeader), strconv.Itoa(notReadyRefreshAfterSeconds); got != want {
+		t.Errorf("expected %s header %q, got %q", refreshAfterHeader, want, got)
+	}
+
+	close(block)
+	waitForJobDone(t, jobsMgr, res.ID)
+}
+
 func TestHarborAcceptScan(t *testing.T) {
 	tmpDir := t.TempDir()
 	jobsMgr, _ := jobs.NewManager(tmpDir)
@@ -303,6 +359,14 @@ func waitForJobDone(t *testing.T, jobsMgr *jobs.Manager, id string) {
 	for time.Now().Before(deadline) {
 		job := jobsMgr.GetJob(id)
 		if job != nil && (job.Status == "completed" || job.Status == "failed") {
+			// jobsMgr's worker goroutines keep running (and writing under
+			// t.TempDir()) past this point unless drained - WaitIdle blocks
+			// until every queued disk write has actually landed, so the
+			// caller's eventual t.TempDir() cleanup can't race a write still
+			// in flight.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			jobsMgr.WaitIdle(ctx)
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

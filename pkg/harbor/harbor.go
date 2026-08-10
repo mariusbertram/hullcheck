@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,20 @@ const (
 	mimeTypeSBOMReport  = "application/vnd.security.sbom.report+json; version=1.0"
 	mediaTypeSPDX       = "application/spdx+json"
 )
+
+// refreshAfterHeader is the header Harbor's own scan job reads off a 302
+// "not ready" GetReport response to decide how long to wait before its
+// next poll (goharbor/harbor's pkg/scan/rest/v1/client.go). Left unset (or
+// unparseable) it falls back to a hardcoded 5s, which is what drove
+// GetReport's poll volume before this existed.
+const refreshAfterHeader = "Refresh-After"
+
+// notReadyRefreshAfterSeconds is how long we ask Harbor to wait between
+// GetReport polls while a scan is still queued/running. Harbor parses
+// refreshAfterHeader with strconv.ParseInt(v, 10, 8) - an 8-bit int - so
+// anything above 127 is silently treated as absent (falls back to the 5s
+// default) rather than erroring; keep this well under that ceiling.
+const notReadyRefreshAfterSeconds = 20
 
 type ScanRequest struct {
 	Registry struct {
@@ -117,6 +132,17 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"error": map[string]string{"message": message},
 	})
+}
+
+// writeNotReady responds 302 with refreshAfterHeader set, so Harbor's own
+// scan job paces its next GetReport poll at notReadyRefreshAfterSeconds
+// instead of its 5s default - cutting poll volume (and thus contention on
+// jobsMgr.GetJob, see jobs.Manager's doc comments) roughly 4x without
+// changing anything about how long Harbor is willing to keep polling
+// overall.
+func writeNotReady(w http.ResponseWriter, message string) {
+	w.Header().Set(refreshAfterHeader, strconv.Itoa(notReadyRefreshAfterSeconds))
+	writeError(w, http.StatusFound, message)
 }
 
 func NewHandler(jobsMgr *jobs.Manager) *Handler {
@@ -252,7 +278,7 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 	}
 
 	if job.Status == "queued" || job.Status == "running" {
-		writeError(w, http.StatusFound, "scan still in progress")
+		writeNotReady(w, "scan still in progress")
 		return
 	}
 
