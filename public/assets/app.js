@@ -131,6 +131,19 @@ function subscribeLive(id) {
 document.getElementById('scan-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const image = document.getElementById('image-input').value.trim();
+  const authority = document.getElementById('adv-authority').value.trim();
+  const body = {
+    image,
+    insecureSkipTlsVerify: document.getElementById('adv-insecure-tls').checked,
+    insecureUseHttp: document.getElementById('adv-insecure-http').checked
+  };
+  if (authority) {
+    body.registryAuth = {
+      authority,
+      username: document.getElementById('adv-username').value,
+      password: document.getElementById('adv-password').value
+    };
+  }
 
   const submitBtn = document.getElementById('scan-submit');
   submitBtn.disabled = true;
@@ -138,7 +151,7 @@ document.getElementById('scan-form').addEventListener('submit', async (e) => {
     const res = await fetch('/api/scans', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image })
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) {
