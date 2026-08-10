@@ -430,6 +430,15 @@ even though it had actually finished. Scan history predating this still
 works - `GetReport` falls back to building the report on the fly if
 `grype-harbor.json` isn't there.
 
+The vulnerability report response body is the `HarborVulnerabilityReport`
+object directly at the top level (`generated_at`/`artifact`/`scanner`/
+`severity`/`vulnerabilities` as direct JSON keys), per the Pluggable
+Scanner Spec's OpenAPI schema - not wrapped in an object keyed by the mime
+type. An earlier version of this code did wrap it that way; Harbor's own
+decoder read the resulting body as an all-zero-value report rather than
+erroring, so a scan that found real vulnerabilities showed up clean in
+Harbor's UI with no indication anything was wrong.
+
 ## VEX attestations
 
 Every scan checks the registry for an [OpenVEX](https://openvex.dev/)

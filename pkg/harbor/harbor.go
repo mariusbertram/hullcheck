@@ -365,16 +365,26 @@ func BuildVulnerabilityReport(image string, generatedAt time.Time, grypeData []b
 	}, nil
 }
 
-// EncodeVulnerabilityReport wraps BuildVulnerabilityReport's result in the
-// same envelope GetReport serves it under and marshals it to bytes, ready
-// to write straight to an HTTP response or, via scanner.Runner, to
-// HarborVulnReportArtifact.
+// EncodeVulnerabilityReport marshals BuildVulnerabilityReport's result to
+// bytes, ready to write straight to an HTTP response or, via
+// scanner.Runner, to HarborVulnReportArtifact. Per the Pluggable Scanner
+// Spec's OpenAPI schema (HarborVulnerabilityReport - both
+// mimeTypeVulnGeneric and mimeTypeVulnHarbor use the exact same schema),
+// the response body IS the report object at the top level - generated_at,
+// artifact, scanner, severity, vulnerabilities as direct JSON keys - NOT
+// wrapped in an object keyed by the mime type. An earlier version of this
+// code wrapped it in exactly that (map[string]interface{}{mimeType:
+// report}), which Harbor's own JSON decoder - expecting those fields at
+// the top level - silently read as an all-zero-value report (no error, no
+// crash, just severity "" and an empty vulnerabilities array) rather than
+// failing loudly, so a scan that actually found vulnerabilities would show
+// up in Harbor's UI as clean.
 func EncodeVulnerabilityReport(image string, generatedAt time.Time, grypeData []byte) ([]byte, error) {
 	report, err := BuildVulnerabilityReport(image, generatedAt, grypeData)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]interface{}{mimeTypeVulnGeneric: report})
+	return json.Marshal(report)
 }
 
 // getSBOMReport serves the SPDX SBOM scanner.RunScan wrote alongside the
