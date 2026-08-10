@@ -9,11 +9,13 @@ Paste a reference to a container image or OCI artifact, hit scan, and syft
 catalogs it while grype matches the result against its vulnerability
 database; a license summary is derived from the same SBOM. Results (SBOM,
 vulnerability findings, license report) are shown live, and a past scan can
-be reopened by its ID. The UI intentionally exposes nothing else — no
-settings screen, no browsable history; registry pull secrets and an
-HTTP(S) proxy are configured outside the UI (env vars / mounted Secret / the
-`/api/config` API). **The UI has no authentication** and is designed to run
-on Kubernetes/OpenShift.
+be reopened by its ID. The scan form also has an "Advanced" section for
+one-off registry credentials / TLS settings scoped to that single scan. The
+UI otherwise intentionally exposes nothing else — no settings screen, no
+browsable history; default registry pull secrets and an HTTP(S) proxy are
+configured outside the UI (env vars / mounted Secret / the `/api/config`
+API). **The UI has no authentication** and is designed to run on
+Kubernetes/OpenShift.
 
 A [Harbor Pluggable Scanner Adapter](https://github.com/goharbor/pluggable-scanner-spec)
 (`/api/v1/*`) is built in, so hullcheck can also be registered as a scanner
@@ -102,17 +104,17 @@ and standalone `linux/amd64`/`linux/arm64` binaries + checksums.
 
 ## Configuration
 
-The UI has no configuration screen — it exposes exactly two actions: start a
-scan and look up a previous scan by ID. Registry credentials, proxy and TLS
-defaults are configured outside the UI:
+The UI has no settings screen for defaults. Registry credentials, proxy and
+TLS defaults are configured outside the UI:
 
 1. **Defaults**, seeded at startup from environment variables / a mounted
    Secret (see below) and persisted to `DATA_DIR/config.json` after that.
    They can still be read/updated via the `GET`/`PUT /api/config` API (see
    [API](#api) below) for scripted or admin use.
-2. **Per-scan overrides** can still be passed to `POST /api/scans` directly
-   (registry host, username/password or token, skip-TLS-verify /
-   plain-HTTP) — never persisted — but there is no UI field for them anymore.
+2. **Per-scan overrides** for a one-off private image (registry host,
+   username/password, skip-TLS-verify / plain-HTTP) can be entered under
+   "Advanced" on the scan form, or passed to `POST /api/scans` directly —
+   never persisted.
 
 | Setting | Env var (seed only) | API field |
 |---|---|---|

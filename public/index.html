@@ -20,7 +20,20 @@
         Image reference
         <input id="image-input" type="text" placeholder="registry.example.com/namespace/image:tag" required autocomplete="off" />
       </label>
+
+      <details id="advanced-details">
+        <summary>Advanced (one-off registry credentials / TLS)</summary>
+        <div class="grid">
+          <label>Registry host<input id="adv-authority" type="text" placeholder="registry.example.com" autocomplete="off" /></label>
+          <label>Username<input id="adv-username" type="text" autocomplete="off" /></label>
+          <label>Password / token<input id="adv-password" type="password" autocomplete="off" /></label>
+          <label class="checkbox"><input id="adv-insecure-tls" type="checkbox" /> Skip TLS verification</label>
+          <label class="checkbox"><input id="adv-insecure-http" type="checkbox" /> Use plain HTTP</label>
+        </div>
+      </details>
+
       <button type="submit" id="scan-submit">Scan with syft + grype + grant</button>
+      <p class="hint">One-off credentials entered above are used for this scan only and are never persisted. Default registry credentials and proxy settings are configured outside the UI.</p>
     </form>
 
     <form id="lookup-form" class="card">
@@ -38,6 +51,7 @@
         <div>
           <h2 id="result-image"></h2>
           <span id="result-status" class="badge"></span>
+          <span id="result-id" class="hint"></span>
         </div>
         <div id="tool-badges" class="tool-badges"></div>
       </div>

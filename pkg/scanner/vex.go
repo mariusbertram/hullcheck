@@ -256,7 +256,15 @@ func vexRemoteOptions(ctx context.Context, ref name.Reference, regOpts image.Reg
 		return nil, fmt.Errorf("building TLS config: %w", err)
 	}
 	if tlsCfg != nil {
-		opts = append(opts, remote.WithTransport(&http.Transport{TLSClientConfig: tlsCfg}))
+		// Clone remote.DefaultTransport rather than starting from a bare
+		// &http.Transport{} - stereoscope's TLSConfig() always returns a
+		// non-nil *tls.Config (even with nothing customized), so this runs
+		// on every VEX lookup. A bare transport has Proxy: nil, silently
+		// dropping HTTP_PROXY/HTTPS_PROXY support that the rest of the
+		// registry client gets for free via DefaultTransport.
+		t := remote.DefaultTransport.(*http.Transport).Clone()
+		t.TLSClientConfig = tlsCfg
+		opts = append(opts, remote.WithTransport(t))
 	}
 
 	return opts, nil
