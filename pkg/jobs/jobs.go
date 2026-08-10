@@ -203,8 +203,43 @@ type Manager struct {
 	// polling if this one doesn't get to it first.
 	wake       chan struct{}
 	maxHistory int
-	activeWG   sync.WaitGroup
+
+	// drainMu tracks in-flight scans without the classic sync.WaitGroup
+	// Add-races-Wait hazard: workerPool's goroutines run for the Manager's
+	// entire lifetime, so an Add(1) for a newly claimed job can fall at
+	// literally any instant, including concurrently with a WaitIdle call -
+	// which the stdlib explicitly documents as unsafe for WaitGroup ("calls
+	// with a positive delta that start when the counter is zero must
+	// happen before a Wait"), and which -race duly caught. Each running
+	// scan holds a read lock (many can run concurrently, same as before);
+	// WaitIdle takes the write lock, which - being an RWMutex - both waits
+	// for every current holder to release AND blocks any new RLock (i.e.
+	// any new scan starting) until it's done, which also closes a second,
+	// non-race gap the WaitGroup version had: today it can observe zero
+	// active scans and return right as another one is about to start.
+	drainMu sync.RWMutex
+
+	// persistCh decouples disk I/O from m.mu: every mutating method below
+	// (SetToolStatus, AppendLog, ...) marshals whatever it needs to write
+	// while holding m.mu (cheap, in-memory only), enqueues a closure that
+	// does the actual write, then unlocks - so a slow write to the PVC
+	// (NFS latency, contention from concurrent scans) never blocks GetJob/
+	// IsLocal, which is exactly the path Harbor's report polling depends on
+	// (see README's Scaling section). persistWorker drains it on a single
+	// goroutine, so writes for a given job are still applied in the same
+	// order they were enqueued - enqueueing happens before unlocking
+	// specifically so that ordering is guaranteed by m.mu itself, not by
+	// happenstance goroutine scheduling.
+	persistCh chan func()
 }
+
+// persistQueueSize bounds how many pending disk writes can queue up before
+// enqueuePersist starts blocking its caller (at which point it degrades to
+// today's synchronous-write behavior, just for whichever single goroutine
+// hits the full queue rather than for every reader). Sized generously since
+// each task is a few KB at most - only sustained, severe PVC unavailability
+// should ever get close to it.
+const persistQueueSize = 1024
 
 func NewManager(dataDir string) (*Manager, error) {
 	scansDir := filepath.Join(dataDir, "scans")
@@ -228,12 +263,35 @@ func NewManager(dataDir string) (*Manager, error) {
 		localQueue:  make(chan QueueItem, 500),
 		wake:        make(chan struct{}, concurrency),
 		maxHistory:  maxHistory,
+		persistCh:   make(chan func(), persistQueueSize),
 	}
 
+	go m.persistWorker()
 	go m.workerPool(concurrency, pollInterval)
 	log.Printf("jobs: worker pool started (concurrency=%d, maxHistory=%d, queuePollInterval=%s)", concurrency, maxHistory, pollInterval)
 
 	return m, nil
+}
+
+// persistWorker runs every disk write enqueued via enqueuePersist on a
+// single goroutine, off any lock any reader depends on. It never exits -
+// same lifecycle as workerPool's goroutines, which also run until process
+// exit.
+func (m *Manager) persistWorker() {
+	for task := range m.persistCh {
+		task()
+	}
+}
+
+// enqueuePersist queues a disk-write closure for persistWorker. Callers
+// must call this before releasing m.mu (not after) so the enqueue order -
+// and therefore the order persistWorker applies writes in - matches
+// mutation order, which m.mu already guarantees between lock holders.
+// task must not touch the Manager or any *Job - only pre-computed local
+// values (paths, marshaled bytes) - since it runs unsynchronized with
+// whatever m.mu protects by the time persistWorker gets to it.
+func (m *Manager) enqueuePersist(task func()) {
+	m.persistCh <- task
 }
 
 func (m *Manager) SetRunner(fn func(job *Job, regAuth map[string]string)) {
@@ -273,9 +331,9 @@ func (m *Manager) workerPool(concurrency int, pollInterval time.Duration) {
 }
 
 func (m *Manager) runQueued(workerID int, item QueueItem) {
-	m.activeWG.Add(1)
+	m.drainMu.RLock()
+	defer m.drainMu.RUnlock()
 	m.executeJobSafely(workerID, item)
-	m.activeWG.Done()
 }
 
 // claimNext atomically claims the oldest unclaimed entry on the shared PVC
@@ -357,21 +415,50 @@ func (m *Manager) enqueueShared(id string, createdAt int64) {
 	}
 }
 
-// WaitIdle blocks until this process has no scans actively running, or ctx
-// is done. Graceful shutdown calls this after closing the HTTP listener so
-// a scan already running here (its worker goroutine isn't tied to any HTTP
-// handler) gets to finish instead of being abandoned mid-run - which would
-// otherwise leave the job stuck "running" forever, and any pod polling it
-// via the disk-tail fallback stuck watching a file that will never change
-// again.
+// WaitIdle blocks until this process has no scans actively running AND
+// every disk write those scans queued has actually landed (see
+// enqueuePersist), or ctx is done. Graceful shutdown calls this after
+// closing the HTTP listener so a scan already running here (its worker
+// goroutine isn't tied to any HTTP handler) gets to finish instead of
+// being abandoned mid-run - which would otherwise leave the job stuck
+// "running" forever, and any pod polling it via the disk-tail fallback
+// stuck watching a file that will never change again. The persist-drain
+// half matters for the same reason: a scan's very last status write is
+// enqueued (not yet applied) by the time runQueued releases drainMu, so
+// without it the process could exit with that final "completed"/"failed"
+// update never actually written to job.json.
+//
+// Taking drainMu for writing (see its doc comment) both waits for every
+// currently running scan and blocks any new one from starting until this
+// returns, so it also can't return early because it happened to sample
+// zero active scans right as another one was about to start.
 func (m *Manager) WaitIdle(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
-		m.activeWG.Wait()
+		m.drainMu.Lock()
+		m.drainPersist(ctx)
+		m.drainMu.Unlock()
 		close(done)
 	}()
 	select {
 	case <-done:
+	case <-ctx.Done():
+	}
+}
+
+// drainPersist blocks until every persist task enqueued so far (see
+// enqueuePersist) has been applied, or ctx is done. Enqueues a sentinel
+// task and waits for it - since persistWorker is a single FIFO consumer,
+// the sentinel only runs once everything queued ahead of it already has.
+func (m *Manager) drainPersist(ctx context.Context) {
+	drained := make(chan struct{})
+	select {
+	case m.persistCh <- func() { close(drained) }:
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-drained:
 	case <-ctx.Done():
 	}
 }
@@ -487,7 +574,19 @@ func (m *Manager) CreateJob(image string, regAuth map[string]string, insecureTLS
 		Logs:    []LogEntry{},
 	}
 
-	_ = os.MkdirAll(filepath.Join(m.scansDir, id), 0755)
+	// job.json must actually exist on disk before this job is handed to any
+	// worker (localQueue or the shared PVC queue below): a worker claiming/
+	// adopting it reads job.json straight off disk (see executeJob) and
+	// must never race the write that creates it. That only matters for
+	// this very first write - every later update (SetToolStatus, AppendLog,
+	// SetSummary, SetError, executeJob's own status transitions) goes
+	// through the async persistJob instead, since by then the file already
+	// exists and workers only need eventually-consistent freshness, not
+	// existence. job isn't reachable by any other goroutine yet (not in
+	// m.jobs, not yet enqueued anywhere), so this needs no lock either.
+	dir := filepath.Join(m.scansDir, id)
+	_ = os.MkdirAll(dir, 0755)
+	m.persistJobSync(job, dir)
 
 	// Ad-hoc per-scan registry credentials (typed into the UI's "Advanced"
 	// section, or Harbor's per-scan robot-account token/basic-auth header)
@@ -503,7 +602,6 @@ func (m *Manager) CreateJob(image string, regAuth map[string]string, insecureTLS
 	if hasAdHocCredentials {
 		m.mu.Lock()
 		m.jobs[id] = job
-		m.persistJob(job)
 		clone := cloneJob(job)
 		m.mu.Unlock()
 
@@ -511,10 +609,6 @@ func (m *Manager) CreateJob(image string, regAuth map[string]string, insecureTLS
 		m.localQueue <- QueueItem{JobID: id, RegistryAuth: regAuth}
 		return clone
 	}
-
-	m.mu.Lock()
-	m.persistJob(job)
-	m.mu.Unlock()
 
 	log.Printf("jobs: scan %s queued (image=%s)", id, image)
 	m.enqueueShared(id, now)
@@ -687,13 +781,23 @@ func (m *Manager) AppendLog(id, tool, stream, text string) {
 		job.Logs = job.Logs[1:]
 	}
 
+	// AppendLog fires once per syft/grype log line - easily dozens of times
+	// a second while a scan is actively cataloging/matching - so writing
+	// the log file synchronously here (as this used to) meant m.mu, which
+	// GetJob/IsLocal also need, was held across a disk write on essentially
+	// every scan tick. Enqueueing it instead (see enqueuePersist) keeps
+	// this critical section in-memory only.
 	logFile := filepath.Join(m.scansDir, id, "combined.log")
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		data, _ := json.Marshal(entry)
-		_, _ = f.Write(append(data, '\n'))
+	line, _ := json.Marshal(entry)
+	line = append(line, '\n')
+	m.enqueuePersist(func() {
+		f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		_, _ = f.Write(line)
 		_ = f.Close()
-	}
+	})
 	m.mu.Unlock()
 
 	m.Broadcast(id, Event{Type: "log", Data: entry})
@@ -735,27 +839,57 @@ func (m *Manager) Broadcast(id string, evt Event) {
 	}
 }
 
-// persistJob writes via a temp file + rename rather than directly
-// (os.WriteFile truncates in place) so concurrent readers on other pods -
-// ListJobs and the SSE disk-tail fallback now read this file directly off
-// the shared volume, not just this process's memory - never observe a
-// truncated or partially-written job.json. Rename within the same
-// directory is atomic on any POSIX-compliant filesystem, including NFS.
+// writeJobJSONFile is the actual job.json write: temp file + rename rather
+// than direct (os.WriteFile truncates in place) so concurrent readers on
+// other pods - ListJobs and the SSE disk-tail fallback read this file
+// directly off the shared volume, not just this process's memory - never
+// observe a truncated or partially-written job.json. Rename within the
+// same directory is atomic on any POSIX-compliant filesystem, including
+// NFS. Shared by persistJob's async worker and persistJobSync.
+func writeJobJSONFile(dir string, data []byte) {
+	final := filepath.Join(dir, "job.json")
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		log.Printf("jobs: failed to persist %s: %v", final, err)
+		return
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		log.Printf("jobs: failed to publish %s: %v", final, err)
+	}
+}
+
+// persistJob is called with m.mu held, so it only does in-memory work
+// (snapshotting and marshaling job - both cheap, no syscalls) before
+// handing the actual write off to persistWorker via enqueuePersist.
 func (m *Manager) persistJob(job *Job) {
 	dir := filepath.Join(m.scansDir, job.ID)
-	_ = os.MkdirAll(dir, 0755)
 
 	// Save job.json without logs array
 	shallow := *job
 	shallow.Logs = nil
-	data, _ := json.MarshalIndent(shallow, "", "  ")
-
-	final := filepath.Join(dir, "job.json")
-	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
+	data, err := json.MarshalIndent(shallow, "", "  ")
+	if err != nil {
 		return
 	}
-	_ = os.Rename(tmp, final)
+
+	m.enqueuePersist(func() {
+		_ = os.MkdirAll(dir, 0755)
+		writeJobJSONFile(dir, data)
+	})
+}
+
+// persistJobSync is CreateJob's synchronous counterpart to persistJob - see
+// its call site for why a brand-new job's very first write needs to block
+// until job.json actually exists, unlike every later update. dir must
+// already exist (CreateJob creates it before calling this).
+func (m *Manager) persistJobSync(job *Job, dir string) {
+	shallow := *job
+	shallow.Logs = nil
+	data, err := json.MarshalIndent(shallow, "", "  ")
+	if err != nil {
+		return
+	}
+	writeJobJSONFile(dir, data)
 }
 
 func (m *Manager) readFullJob(id string) *Job {
