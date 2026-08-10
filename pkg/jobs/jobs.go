@@ -23,6 +23,10 @@ const maxLogLines = 4000
 // same but is set independently per tool).
 const jobStatusFailed = "failed"
 
+// jobStatusCompleted is the terminal Job.Status value for a scan that
+// finished without error.
+const jobStatusCompleted = "completed"
+
 // toolStatusPending is a ToolStatus's initial state before a tool starts running.
 const toolStatusPending = "pending"
 
@@ -439,7 +443,7 @@ func (m *Manager) executeJob(item QueueItem) {
 	if jobErr != "" {
 		job.Status = jobStatusFailed
 	} else {
-		job.Status = "completed"
+		job.Status = jobStatusCompleted
 	}
 	m.persistJob(job)
 	doneClone := cloneJob(job)

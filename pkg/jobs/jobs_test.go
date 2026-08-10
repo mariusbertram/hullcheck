@@ -13,7 +13,7 @@ func waitForTerminalStatus(t *testing.T, mgr *Manager, id string, timeout time.D
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if job := mgr.GetJob(id); job != nil && (job.Status == "completed" || job.Status == jobStatusFailed) {
+		if job := mgr.GetJob(id); job != nil && (job.Status == jobStatusCompleted || job.Status == jobStatusFailed) {
 			return job
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -59,7 +59,7 @@ func TestCreateJob_SharedQueue_ClaimedByExactlyOnePod(t *testing.T) {
 	// must reflect that - GetJob falls back to disk for a job this pod
 	// didn't claim itself.
 	final := waitForTerminalStatus(t, podB, job.ID, 5*time.Second)
-	if final.Status != "completed" {
+	if final.Status != jobStatusCompleted {
 		t.Fatalf("expected job to complete, got status=%s error=%s", final.Status, final.Error)
 	}
 
@@ -94,7 +94,7 @@ func TestCreateJob_AdHocCredentials_StayLocal(t *testing.T) {
 	job := podA.CreateJob("example.com/some/image:latest", regAuth, false, false)
 
 	final := waitForTerminalStatus(t, podA, job.ID, 5*time.Second)
-	if final.Status != "completed" {
+	if final.Status != jobStatusCompleted {
 		t.Fatalf("expected job to complete, got status=%s error=%s", final.Status, final.Error)
 	}
 
