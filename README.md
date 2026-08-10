@@ -30,10 +30,16 @@ SBOM generation UI.
                           │        └─ Harbor Scanner Adapter API
                           ├─ syft/grype linked in as Go libraries -
                           │  pull the image and match vulnerabilities
-                          │  in-process (no PATH lookup, no exec.Command)
-                          ├─ job queue (bounded concurrency)
+                          │  in-process (no PATH lookup, no exec.Command);
+                          │  extracted image content lands under /data/tmp,
+                          │  not memory, and is deleted the moment each
+                          │  scan is done cataloging it
+                          ├─ job queue (bounded concurrency per pod, shared
+                          │  via /data/queue so any pod can claim a queued
+                          │  scan - see Scaling below)
                           ├─ SSE log/status streaming
-                          └─ /data (PVC): config.json, grype-db/,
+                          └─ /data (PVC): config.json, grype-db/, queue/,
+                             tmp/ (scratch space for image extraction),
                              scan history + SBOM/vuln/license JSON
 ```
 
@@ -41,7 +47,8 @@ SBOM generation UI.
   dependencies, no subprocesses). No database; state lives as JSON files
   under `DATA_DIR` (default `/data`), which should be a PVC in Kubernetes.
   - `pkg/server` — HTTP routing, the WebUI JSON API and SSE log streaming.
-  - `pkg/jobs` — the scan job queue/history (bounded worker pool).
+  - `pkg/jobs` — the scan job queue/history (bounded worker pool per pod,
+    dispatch shared across pods via `DATA_DIR/queue` - see Scaling below).
   - `pkg/scanner` — runs syft (SBOM) and grype (vulnerability matching) via
     their Go libraries (`github.com/anchore/syft`, `github.com/anchore/grype`);
     the license summary is derived directly from syft's SBOM package
@@ -58,10 +65,20 @@ SBOM generation UI.
   `sbom.json`); grype matches that SBOM against the vulnerability database
   (no second registry pull); the license summary is read off the same SBOM's
   per-package license metadata. The image is only pulled once, by syft.
+- Cataloging an image means syft (via its `stereoscope` dependency)
+  extracts its layers to disk first — `TMPDIR` (`DATA_DIR/tmp` by default,
+  see [Configuration](#configuration)) rather than the process's memory.
+  That extracted content is deleted the moment syft is done cataloging it
+  (success or failure alike), so it never accumulates across scans; a
+  directory orphaned by a hard-killed process (OOMKill, a SIGKILL past
+  `terminationGracePeriodSeconds`) is swept on the next startup once it's
+  old enough to be unambiguously abandoned rather than just a slow scan.
 - Registry credentials are passed to syft/grype in-process as
   `image.RegistryOptions` — never written to a file or an env var, so
   concurrent scans can't see each other's credentials and there's nothing
-  on disk to clean up.
+  on disk to clean up. This also bounds which scans can run on any pod in a
+  multi-replica deployment vs. only the one that received the request — see
+  [Scaling](#scaling).
 - The vulnerability database is downloaded once at startup into
   `DATA_DIR/grype-db` (persisted across restarts on the PVC) and kept
   in memory; `/readyz` reports not-ready until it's loaded.
@@ -125,12 +142,16 @@ TLS defaults are configured outside the UI:
 | Skip TLS verify / plain HTTP | — | `insecureSkipTlsVerify` / `insecureUseHttp` |
 
 Other env vars: `PORT` (8080), `DATA_DIR` (`/data`), `MAX_CONCURRENCY` (2
-parallel scans), `TOOL_TIMEOUT_MS` (900000, applies to each of syft/grype),
-`MAX_HISTORY` (200 scans kept), `GRYPE_DB_AUTO_UPDATE` (`true`),
+parallel scans per pod), `TOOL_TIMEOUT_MS` (900000, applies to each of
+syft/grype), `MAX_HISTORY` (200 scans kept), `QUEUE_POLL_INTERVAL_MS` (2000
+- how often a pod checks `DATA_DIR/queue` for a job another pod hasn't
+gotten to yet; see [Scaling](#scaling)), `GRYPE_DB_AUTO_UPDATE` (`true`),
 `GOLANG_SEARCH_REMOTE_LICENSES` (`true`), `VEX_LOOKUP_ENABLED` (`true`) — see
 [Air-gapped / offline deployment](#air-gapped--offline-deployment) and
 [VEX attestations](#vex-attestations) below for what these control and why
-they default the way they do.
+they default the way they do. `TMPDIR` defaults to `DATA_DIR/tmp` (scratch
+space for image extraction, see above) and only needs setting explicitly to
+point it somewhere other than the PVC, e.g. a faster node-local disk.
 
 Credentials are never written to environment variables, files, or disk at
 all. Each scan builds its own in-process `image.RegistryOptions` (mounted
@@ -199,16 +220,44 @@ Two things this needs to actually work:
   available, set `autoscaling.enabled=false` and `replicaCount=1` (or drop
   `hpa.yaml` from `deploy/k8s/kustomization.yaml` and pin `replicas: 1`).
 
-Job state, the live SSE stream, and the per-job worker queue live in each
-pod's memory - there's no Redis/DB behind this. A request can land on a pod
-that didn't create the job (any `GET`/list call, or the initial connection of
-an SSE stream); that pod falls back to reading the job straight off the
-shared volume, polling it once a second, so the UI keeps working regardless
-of which replica handles a given request. `EventSource` reconnects on its
-own if a stream's pod is replaced mid-scan (rolling update, scale-down,
-node drain), and the process only exits after any scan it's still running
-locally has finished (bounded by `terminationGracePeriodSeconds`), so
-scaling events don't orphan a job mid-run.
+There's no Redis/DB behind any of this - `DATA_DIR` (the PVC) is the only
+shared state, and it's what makes the rest of this section work.
+
+**Job dispatch** (which pod actually runs a queued scan) is shared across
+every replica via `DATA_DIR/queue`: `POST /api/scans` (and Harbor's own
+`POST /api/v1/scan`) write a small queue entry there, and every pod's
+worker pool claims entries from it via an atomic rename (`os.Rename`,
+guaranteed by POSIX - and NFS - to let exactly one claimant win a race for
+the same filename), so two pods can never run the same job twice. This
+means a job that's still queued when its creating pod is replaced (rolling
+update, scale-down, a crash) doesn't get lost - another pod's worker picks
+it up, typically within `QUEUE_POLL_INTERVAL_MS`; the pod that created it
+also gets nudged to check immediately, so the common case (that pod has a
+free worker) starts with no perceptible delay.
+
+**One exception:** a job carrying ad-hoc, one-off registry credentials -
+typed into the UI's "Advanced" section, or Harbor's own per-scan
+robot-account token/basic-auth header, sent with every scan request it
+submits - is pinned to the pod that received the request instead. Those
+credentials live only in that pod's memory and are deliberately never
+written to disk (see [Configuration](#configuration)'s note on registry
+credentials), which also means such a job can't fail over to another pod if
+the creating one dies before starting it - same as before this queue
+existed. Everything else (public images, or private ones using the mounted
+pull secret / a registry auth already configured globally) goes through the
+shared queue and can run on any pod.
+
+**Job state** (once a scan is actually running), the live SSE stream, and
+log broadcast live in whichever pod's memory is executing that job - a
+request can land on a *different* pod (any `GET`/list call, or the initial
+connection of an SSE stream); that pod falls back to reading the job
+straight off the shared volume, polling it once a second, so the UI keeps
+working regardless of which replica handles a given request. `EventSource`
+reconnects on its own if a stream's pod is replaced mid-scan, and a pod only
+exits after any scan it's still running locally has finished (bounded by
+`terminationGracePeriodSeconds`), so scaling events don't orphan a job
+that's already running - only ever one that's still queued and pinned to a
+now-dead pod via the ad-hoc-credentials exception above.
 
 This doesn't (yet) extend to `config.Manager` (the Settings page - proxy,
 registry credentials, etc.): it also caches in memory per pod, but unlike
@@ -356,6 +405,21 @@ Services → Scanners (endpoint URL: `http://<service>:8080`).
 | `GET` | `/api/v1/metadata` | scanner capabilities: `vulnerability` and `sbom` |
 | `POST` | `/api/v1/scan` | Harbor submits an artifact to scan; returns a scan request `id` |
 | `GET` | `/api/v1/scan/{id}/report` | report content-negotiated via `Accept`: the `grype` vulnerability report, or (`Accept: application/vnd.security.sbom.report+json`) the SPDX SBOM, both from the same scan |
+
+Harbor starts polling `GetReport` immediately after submitting a scan and
+gives up on any single call after a short client-side timeout. The
+vulnerability report shape it consumes is built from `grype.json` once, in
+the background, right after grype finishes (`grype-harbor.json`, alongside
+the other artifacts) rather than being parsed and rebuilt from scratch
+inside every `GetReport` request - for a CVE-heavy image (tens of MB of
+`grype.json` isn't unusual for something like an OpenShift/RHCOS release
+image) doing that transformation synchronously on Harbor's first poll after
+completion was slow enough to blow past its timeout
+(`context deadline exceeded (Client.Timeout exceeded while awaiting
+headers)`), leaving the scan stuck "not ready" from Harbor's perspective
+even though it had actually finished. Scan history predating this still
+works - `GetReport` falls back to building the report on the fly if
+`grype-harbor.json` isn't there.
 
 ## VEX attestations
 

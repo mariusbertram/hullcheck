@@ -6,10 +6,16 @@ metadata:
 spec:
   # ReadWriteMany because every replica in the Deployment mounts this same
   # volume - scan history, artifacts and per-job logs must be visible to
-  # whichever pod a request lands on, not just the one that ran the scan.
-  # Needs an RWX-capable StorageClass (NFS, Longhorn, EFS, Azure Files,
-  # CephFS, ...). If only ReadWriteOnce is available, pin replicas to 1 and
-  # remove/disable the HPA instead - see hpa.yaml and README.md.
+  # whichever pod a request lands on, not just the one that ran the scan;
+  # it's also how the job queue (queue/) and per-scan image-extraction
+  # scratch space (tmp/) are shared across pods - see README.md's Scaling
+  # section. Needs an RWX-capable StorageClass (NFS, Longhorn, EFS, Azure
+  # Files, CephFS, ...). If only ReadWriteOnce is available, pin replicas to
+  # 1 and remove/disable the HPA instead - see hpa.yaml and README.md.
+  #
+  # Size for tmp/ too, not just scan history: it's scratch space for
+  # extracting each scanned image's uncompressed layers (cleaned up as each
+  # scan finishes), sized to at least the largest image you expect to scan.
   accessModes:
     - ReadWriteMany
   resources:

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -237,6 +236,14 @@ func parseRegistryAuth(authority, authorization string) map[string]string {
 	return nil
 }
 
+// HarborVulnReportArtifact is the artifact name scanner.Runner precomputes
+// this report under (see pkg/scanner) right after grype succeeds, so
+// GetReport below can serve it as a plain file read instead of parsing and
+// rebuilding it - potentially tens of thousands of entries for a CVE-heavy
+// image - synchronously inside the request. Exported so pkg/scanner doesn't
+// need to duplicate the filename.
+const HarborVulnReportArtifact = "grype-harbor.json"
+
 func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID string) {
 	job := h.jobsMgr.GetJob(scanID)
 	if job == nil {
@@ -263,13 +270,44 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 		return
 	}
 
+	// The common case: scanner.Runner already built this report in the
+	// background once grype finished (see precomputeHarborVulnReport), so
+	// serving it is just a file read - no re-parsing a potentially huge
+	// grype.json on Harbor's request path. Harbor starts polling GetReport
+	// immediately after submitting the scan and gives up on a single call
+	// after a short timeout; for an image with a CVE-heavy grype.json (tens
+	// of MB isn't unusual for something like an OpenShift/RHCOS release
+	// image), unmarshaling + rebuilding + re-marshaling it synchronously on
+	// the very first poll after completion was slow enough to blow through
+	// that timeout.
+	precomputedPath := h.jobsMgr.ArtifactPath(scanID, HarborVulnReportArtifact)
+	if data, err := os.ReadFile(precomputedPath); err == nil {
+		w.Header().Set("Content-Type", mimeTypeVulnGeneric)
+		_, _ = w.Write(data)
+		return
+	}
+
+	// Fallback for scan history from before precomputation existed (no
+	// grype-harbor.json artifact on disk) - build it on the fly like before.
 	grypePath := h.jobsMgr.ArtifactPath(scanID, "grype.json")
 	data, err := os.ReadFile(grypePath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "grype report artifact not found")
 		return
 	}
+	reportJSON, err := EncodeVulnerabilityReport(job.Image, time.Now(), data)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "grype report artifact is not valid JSON")
+		return
+	}
+	w.Header().Set("Content-Type", mimeTypeVulnGeneric)
+	_, _ = w.Write(reportJSON)
+}
 
+// BuildVulnerabilityReport transforms grype's own JSON report (grypeData -
+// the raw bytes of grype.json) into the shape GetReport serves under
+// mimeTypeVulnGeneric.
+func BuildVulnerabilityReport(image string, generatedAt time.Time, grypeData []byte) (VulnerabilityReport, error) {
 	var grypeDoc struct {
 		Matches []struct {
 			Vulnerability struct {
@@ -288,7 +326,9 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 			} `json:"artifact"`
 		} `json:"matches"`
 	}
-	_ = json.Unmarshal(data, &grypeDoc)
+	if err := json.Unmarshal(grypeData, &grypeDoc); err != nil {
+		return VulnerabilityReport{}, err
+	}
 
 	highestSev := severityUnknown
 	sevOrder := map[string]int{severityCritical: 5, severityHigh: 4, severityMedium: 3, severityLow: 2, severityNegligible: 1, severityUnknown: 0}
@@ -314,20 +354,27 @@ func (h *Handler) GetReport(w http.ResponseWriter, r *http.Request, scanID strin
 		})
 	}
 
-	report := map[string]interface{}{
-		"application/vnd.security.vulnerability.report; version=1.1": VulnerabilityReport{
-			GeneratedAt: filepath.Base(grypePath),
-			Artifact: ArtifactInfo{
-				Repository: job.Image,
-			},
-			Scanner:  scannerInfo(),
-			Severity: highestSev,
-			Vulns:    vulns,
+	return VulnerabilityReport{
+		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
+		Artifact: ArtifactInfo{
+			Repository: image,
 		},
-	}
+		Scanner:  scannerInfo(),
+		Severity: highestSev,
+		Vulns:    vulns,
+	}, nil
+}
 
-	w.Header().Set("Content-Type", "application/vnd.security.vulnerability.report; version=1.1")
-	_ = json.NewEncoder(w).Encode(report)
+// EncodeVulnerabilityReport wraps BuildVulnerabilityReport's result in the
+// same envelope GetReport serves it under and marshals it to bytes, ready
+// to write straight to an HTTP response or, via scanner.Runner, to
+// HarborVulnReportArtifact.
+func EncodeVulnerabilityReport(image string, generatedAt time.Time, grypeData []byte) ([]byte, error) {
+	report, err := BuildVulnerabilityReport(image, generatedAt, grypeData)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]interface{}{mimeTypeVulnGeneric: report})
 }
 
 // getSBOMReport serves the SPDX SBOM scanner.RunScan wrote alongside the

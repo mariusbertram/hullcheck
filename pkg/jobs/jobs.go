@@ -3,11 +3,13 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +23,23 @@ const maxLogLines = 4000
 // same but is set independently per tool).
 const jobStatusFailed = "failed"
 
+// jobStatusCompleted is the terminal Job.Status value for a scan that
+// finished without error.
+const jobStatusCompleted = "completed"
+
 // toolStatusPending is a ToolStatus's initial state before a tool starts running.
 const toolStatusPending = "pending"
 
 // eventTypeStatus identifies a Broadcast Event carrying a Job status snapshot.
 const eventTypeStatus = "status"
+
+// claimedSubdir is where claimNext atomically moves a shared queue entry
+// (queueDir/<name>) before reading it, so a losing rename (ENOENT - another
+// pod's worker already claimed it) is indistinguishable from a name that
+// was never there. It's a subdirectory of queueDir rather than a sibling so
+// both live on the same filesystem/PVC - os.Rename across filesystems isn't
+// atomic (and often isn't even supported).
+const claimedSubdir = "claimed"
 
 func envInt(name string, def int) int {
 	if v := os.Getenv(name); v != "" {
@@ -137,9 +151,24 @@ func cloneJob(j *Job) *Job {
 	return &c
 }
 
+// QueueItem is a unit of dispatch: either handed straight to this pod's
+// worker pool in memory (localQueue) or, once marshaled to JSON, written to
+// queueDir on the shared PVC for any pod's worker pool to claim.
+//
+// RegistryAuth only ever travels the in-memory path. A CreateJob call whose
+// regAuth carries actual credentials (username/password/token - typed
+// one-off into the UI's "Advanced" section, or Harbor's per-scan
+// robot-account token/basic-auth header) never reaches the shared queue at
+// all and is pushed to localQueue instead, so those credentials are never
+// written to disk (see README's Security notes) - which also means such a
+// job can only ever run on the pod that created it. Everything else (no
+// per-scan credentials, or a bare authority already configured globally via
+// the mounted pull secret / UI config - see config.Manager.BuildRegistryOptions)
+// goes through the shared queue with RegistryAuth left nil/empty, so any
+// pod can claim and run it.
 type QueueItem struct {
-	JobID        string
-	RegistryAuth map[string]string
+	JobID        string            `json:"jobId"`
+	RegistryAuth map[string]string `json:"-"`
 }
 
 type Event struct {
@@ -150,19 +179,31 @@ type Event struct {
 type Manager struct {
 	mu       sync.RWMutex
 	scansDir string
-	// jobs holds only jobs this process itself queued via CreateJob - the
-	// only ones its own worker pool will ever run and Broadcast events for.
-	// A multi-pod deployment shares scansDir but not memory: every other
-	// pod's jobs live only on disk as far as this process is concerned, so
-	// GetJob/IsLocal treat presence here as "this pod owns it" and fall
-	// back to disk for everything else (see GetJob).
+	queueDir string
+	// jobs holds only jobs this process is actively running or has run -
+	// either created here with ad-hoc registry credentials (pinned to this
+	// pod, see CreateJob) or claimed off the shared queue (queueDir) by one
+	// of this pod's own workers. A multi-pod deployment shares scansDir and
+	// queueDir but not memory: every other pod's jobs live only on disk as
+	// far as this process is concerned, so GetJob/IsLocal treat presence
+	// here as "this pod owns it" and fall back to disk for everything else
+	// (see GetJob).
 	jobs        map[string]*Job
 	subscribers map[string][]chan Event
 	subMu       sync.RWMutex
 	runner      func(job *Job, regAuth map[string]string)
-	queue       chan QueueItem
-	maxHistory  int
-	activeWG    sync.WaitGroup
+	// localQueue carries jobs pinned to this pod (ad-hoc registry
+	// credentials - see CreateJob/QueueItem) straight to its own worker
+	// pool, bypassing the shared queue entirely.
+	localQueue chan QueueItem
+	// wake nudges an idle local worker to recheck queueDir immediately
+	// after this pod enqueues a shared job, instead of waiting for the next
+	// poll tick - the common case (this pod has a free worker) then starts
+	// with no perceptible delay, while other pods still pick the job up via
+	// polling if this one doesn't get to it first.
+	wake       chan struct{}
+	maxHistory int
+	activeWG   sync.WaitGroup
 }
 
 func NewManager(dataDir string) (*Manager, error) {
@@ -170,20 +211,27 @@ func NewManager(dataDir string) (*Manager, error) {
 	if err := os.MkdirAll(scansDir, 0755); err != nil {
 		return nil, err
 	}
+	queueDir := filepath.Join(dataDir, "queue")
+	if err := os.MkdirAll(filepath.Join(queueDir, claimedSubdir), 0700); err != nil {
+		return nil, err
+	}
 
 	concurrency := envInt("MAX_CONCURRENCY", 2)
 	maxHistory := envInt("MAX_HISTORY", 200)
+	pollInterval := time.Duration(envInt("QUEUE_POLL_INTERVAL_MS", 2000)) * time.Millisecond
 
 	m := &Manager{
 		scansDir:    scansDir,
+		queueDir:    queueDir,
 		jobs:        make(map[string]*Job),
 		subscribers: make(map[string][]chan Event),
-		queue:       make(chan QueueItem, 500),
+		localQueue:  make(chan QueueItem, 500),
+		wake:        make(chan struct{}, concurrency),
 		maxHistory:  maxHistory,
 	}
 
-	go m.workerPool(concurrency)
-	log.Printf("jobs: worker pool started (concurrency=%d, maxHistory=%d)", concurrency, maxHistory)
+	go m.workerPool(concurrency, pollInterval)
+	log.Printf("jobs: worker pool started (concurrency=%d, maxHistory=%d, queuePollInterval=%s)", concurrency, maxHistory, pollInterval)
 
 	return m, nil
 }
@@ -192,16 +240,120 @@ func (m *Manager) SetRunner(fn func(job *Job, regAuth map[string]string)) {
 	m.runner = fn
 }
 
-func (m *Manager) workerPool(concurrency int) {
+// workerPool runs concurrency workers, each preferring a job pinned to this
+// pod (localQueue) over claiming one from the shared PVC queue (claimNext)
+// so a job with ad-hoc credentials never waits behind cross-pod work this
+// pod could run immediately; either source feeds the same execution path.
+func (m *Manager) workerPool(concurrency int, pollInterval time.Duration) {
 	for i := 0; i < concurrency; i++ {
 		workerID := i
 		go func() {
-			for item := range m.queue {
-				m.activeWG.Add(1)
-				m.executeJobSafely(workerID, item)
-				m.activeWG.Done()
+			ticker := time.NewTicker(pollInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case item := <-m.localQueue:
+					m.runQueued(workerID, item)
+					continue
+				default:
+				}
+				if item, ok := m.claimNext(); ok {
+					m.runQueued(workerID, item)
+					continue
+				}
+				select {
+				case item := <-m.localQueue:
+					m.runQueued(workerID, item)
+				case <-m.wake:
+				case <-ticker.C:
+				}
 			}
 		}()
+	}
+}
+
+func (m *Manager) runQueued(workerID int, item QueueItem) {
+	m.activeWG.Add(1)
+	m.executeJobSafely(workerID, item)
+	m.activeWG.Done()
+}
+
+// claimNext atomically claims the oldest unclaimed entry on the shared PVC
+// queue (queueDir), if any, so any pod - not just the one that created the
+// job - can pick it up and run it. Claiming is a rename into
+// queueDir/claimed: POSIX (and NFS, matching the atomicity persistJob
+// already relies on for job.json) guarantees at most one renamer wins when
+// multiple pods' workers race for the same filename, so two pods can never
+// run the same job.
+func (m *Manager) claimNext() (QueueItem, bool) {
+	entries, err := os.ReadDir(m.queueDir)
+	if err != nil {
+		return QueueItem{}, false
+	}
+	claimedDir := filepath.Join(m.queueDir, claimedSubdir)
+
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	// Filenames are zero-padded-createdAt-prefixed (see enqueueShared), so
+	// lexicographic order is chronological order - oldest job first.
+	sort.Strings(names)
+
+	for _, name := range names {
+		src := filepath.Join(m.queueDir, name)
+		dst := filepath.Join(claimedDir, name)
+		if err := os.Rename(src, dst); err != nil {
+			// Lost the race to another worker (this pod's or another pod's) -
+			// or a leftover .tmp from a write still in progress; either way,
+			// move on to the next candidate.
+			continue
+		}
+		data, err := os.ReadFile(dst)
+		_ = os.Remove(dst) // one-shot handoff; the job's real state lives in job.json
+		if err != nil {
+			log.Printf("jobs: claimed queue entry %s but failed to read it: %v", name, err)
+			continue
+		}
+		var item QueueItem
+		if err := json.Unmarshal(data, &item); err != nil {
+			log.Printf("jobs: claimed queue entry %s has invalid JSON: %v", name, err)
+			continue
+		}
+		return item, true
+	}
+	return QueueItem{}, false
+}
+
+// enqueueShared publishes id onto the shared PVC queue so any pod's worker
+// pool can claim it via claimNext. Written via temp file + rename (like
+// persistJob) so a concurrent ReadDir on another pod never sees a
+// partially-written entry.
+func (m *Manager) enqueueShared(id string, createdAt int64) {
+	data, err := json.Marshal(QueueItem{JobID: id})
+	if err != nil {
+		log.Printf("jobs: failed to encode queue entry for %s: %v", id, err)
+		return
+	}
+
+	name := fmt.Sprintf("%020d-%s.json", createdAt, id)
+	final := filepath.Join(m.queueDir, name)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		log.Printf("jobs: failed to write queue entry for %s: %v", id, err)
+		return
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		log.Printf("jobs: failed to publish queue entry for %s: %v", id, err)
+		return
+	}
+
+	select {
+	case m.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -256,8 +408,19 @@ func (m *Manager) executeJob(item QueueItem) {
 	m.mu.Lock()
 	job, exists := m.jobs[item.JobID]
 	if !exists {
-		m.mu.Unlock()
-		return
+		// Claimed off the shared PVC queue rather than pinned to this pod via
+		// CreateJob - adopt it from its persisted job.json so the rest of
+		// this function, and every SetToolStatus/AppendLog/SetSummary/
+		// SetError call the runner makes for it, work exactly as if this pod
+		// had created it. From here on IsLocal(item.JobID) is true on this
+		// pod: it now owns broadcasting this job's live SSE events.
+		job = m.readFullJob(item.JobID)
+		if job == nil {
+			m.mu.Unlock()
+			log.Printf("jobs: claimed queue entry for %s but its job.json is missing, skipping", item.JobID)
+			return
+		}
+		m.jobs[item.JobID] = job
 	}
 	now := time.Now().UnixMilli()
 	job.Status = "running"
@@ -280,7 +443,7 @@ func (m *Manager) executeJob(item QueueItem) {
 	if jobErr != "" {
 		job.Status = jobStatusFailed
 	} else {
-		job.Status = "completed"
+		job.Status = jobStatusCompleted
 	}
 	m.persistJob(job)
 	doneClone := cloneJob(job)
@@ -324,24 +487,48 @@ func (m *Manager) CreateJob(image string, regAuth map[string]string, insecureTLS
 		Logs:    []LogEntry{},
 	}
 
-	m.mu.Lock()
-	m.jobs[id] = job
 	_ = os.MkdirAll(filepath.Join(m.scansDir, id), 0755)
+
+	// Ad-hoc per-scan registry credentials (typed into the UI's "Advanced"
+	// section, or Harbor's per-scan robot-account token/basic-auth header)
+	// live only in this process's memory and are never written to disk (see
+	// README's Security notes) - such a job is pinned to this pod via
+	// localQueue and can only ever run here, exactly as before. Everything
+	// else (no per-scan credentials, or a bare authority reference already
+	// configured globally via the mounted pull secret / UI config) is safe
+	// to hand off to any pod, so it goes on the shared PVC queue instead -
+	// see QueueItem and enqueueShared.
+	hasAdHocCredentials := regAuth != nil && (regAuth["username"] != "" || regAuth["password"] != "" || regAuth["token"] != "")
+
+	if hasAdHocCredentials {
+		m.mu.Lock()
+		m.jobs[id] = job
+		m.persistJob(job)
+		clone := cloneJob(job)
+		m.mu.Unlock()
+
+		log.Printf("jobs: scan %s queued locally (image=%s, ad-hoc registry credentials)", id, image)
+		m.localQueue <- QueueItem{JobID: id, RegistryAuth: regAuth}
+		return clone
+	}
+
+	m.mu.Lock()
 	m.persistJob(job)
-	clone := cloneJob(job)
 	m.mu.Unlock()
 
 	log.Printf("jobs: scan %s queued (image=%s)", id, image)
-	m.queue <- QueueItem{JobID: id, RegistryAuth: regAuth}
-	return clone
+	m.enqueueShared(id, now)
+	return job
 }
 
-// IsLocal reports whether this process queued id via CreateJob, meaning
-// it's the pod that will run it and Broadcast its events locally. Callers
-// use this to decide whether streaming a job's live updates can subscribe
-// to the local pub/sub channel or must instead poll the shared volume,
-// since Broadcast never crosses pod boundaries and no other pod will ever
-// receive an update for a job it didn't create itself.
+// IsLocal reports whether this process is the one running (or that has run)
+// id - either because it was created here with ad-hoc credentials pinned to
+// this pod, or because one of this pod's workers claimed it off the shared
+// queue - meaning it's the pod that will Broadcast its events locally.
+// Callers use this to decide whether streaming a job's live updates can
+// subscribe to the local pub/sub channel or must instead poll the shared
+// volume, since Broadcast never crosses pod boundaries and no other pod
+// will ever receive an update for a job it isn't the one running.
 func (m *Manager) IsLocal(id string) bool {
 	m.mu.RLock()
 	_, exists := m.jobs[id]

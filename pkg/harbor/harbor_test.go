@@ -160,6 +160,97 @@ func TestHarborGetReportSBOMMissing(t *testing.T) {
 	}
 }
 
+// TestHarborGetReportVulnerabilityFallback guards the case where a scan
+// predates precomputeHarborVulnReport (see pkg/scanner) - no
+// grype-harbor.json artifact exists yet, only the raw grype.json a real
+// scan would have written - and GetReport must still build the report on
+// the fly from that.
+func TestHarborGetReportVulnerabilityFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobsMgr, _ := jobs.NewManager(tmpDir)
+	handler := NewHandler(jobsMgr)
+
+	req := httptest.NewRequest("POST", "/api/v1/scan", strings.NewReader(scanBodyAlpine))
+	rec := httptest.NewRecorder()
+	handler.AcceptScan(rec, req)
+
+	var res ScanResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	waitForJobDone(t, jobsMgr, res.ID)
+
+	grypeDoc := `{"matches": [{"vulnerability": {"id": "CVE-2024-0001", "severity": "High", "urls": ["https://example.com"]}, "artifact": {"name": "libfoo", "version": "1.0"}}]}`
+	if err := os.WriteFile(jobsMgr.ArtifactPath(res.ID, "grype.json"), []byte(grypeDoc), 0644); err != nil {
+		t.Fatalf("failed to write stand-in grype artifact: %v", err)
+	}
+
+	reportReq := httptest.NewRequest("GET", "/api/v1/scan/"+res.ID+"/report", nil)
+	reportReq.Header.Set("Accept", mimeTypeVulnGeneric)
+	reportRec := httptest.NewRecorder()
+	handler.GetReport(reportRec, reportReq, res.ID)
+
+	if reportRec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", reportRec.Code, reportRec.Body.String())
+	}
+
+	var envelope map[string]VulnerabilityReport
+	if err := json.Unmarshal(reportRec.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("failed to decode envelope: %v", err)
+	}
+	report, ok := envelope[mimeTypeVulnGeneric]
+	if !ok || len(report.Vulns) != 1 || report.Vulns[0].ID != "CVE-2024-0001" {
+		t.Fatalf("expected one CVE-2024-0001 finding, got %+v", envelope)
+	}
+	if report.Severity != severityHigh {
+		t.Errorf("expected highest severity %q, got %q", severityHigh, report.Severity)
+	}
+}
+
+// TestHarborGetReportVulnerabilityPrecomputed guards the fast path
+// scanner.Runner's precomputeHarborVulnReport enables: when
+// HarborVulnReportArtifact already exists, GetReport must serve it
+// directly rather than re-deriving it from grype.json - which stays absent
+// here on purpose, so a fallback to the slow path would fail the test.
+func TestHarborGetReportVulnerabilityPrecomputed(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobsMgr, _ := jobs.NewManager(tmpDir)
+	handler := NewHandler(jobsMgr)
+
+	req := httptest.NewRequest("POST", "/api/v1/scan", strings.NewReader(scanBodyAlpine))
+	rec := httptest.NewRecorder()
+	handler.AcceptScan(rec, req)
+
+	var res ScanResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	waitForJobDone(t, jobsMgr, res.ID)
+
+	precomputed, err := EncodeVulnerabilityReport("library/alpine:3.20", time.Unix(0, 0), []byte(`{"matches": [{"vulnerability": {"id": "CVE-2024-9999", "severity": "Critical"}, "artifact": {"name": "libbar", "version": "2.0"}}]}`))
+	if err != nil {
+		t.Fatalf("EncodeVulnerabilityReport: %v", err)
+	}
+	if err := os.WriteFile(jobsMgr.ArtifactPath(res.ID, HarborVulnReportArtifact), precomputed, 0644); err != nil {
+		t.Fatalf("failed to write precomputed artifact: %v", err)
+	}
+	// No grype.json written - if GetReport ever falls back to the slow
+	// path here, it fails with "grype report artifact not found" instead
+	// of silently passing.
+
+	reportReq := httptest.NewRequest("GET", "/api/v1/scan/"+res.ID+"/report", nil)
+	reportReq.Header.Set("Accept", mimeTypeVulnGeneric)
+	reportRec := httptest.NewRecorder()
+	handler.GetReport(reportRec, reportReq, res.ID)
+
+	if reportRec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", reportRec.Code, reportRec.Body.String())
+	}
+	if reportRec.Body.String() != string(precomputed) {
+		t.Errorf("expected the precomputed artifact to be served byte-for-byte, got %s", reportRec.Body.String())
+	}
+}
+
 func TestHarborAcceptScan(t *testing.T) {
 	tmpDir := t.TempDir()
 	jobsMgr, _ := jobs.NewManager(tmpDir)

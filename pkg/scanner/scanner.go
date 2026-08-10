@@ -36,6 +36,7 @@ import (
 	"github.com/github/go-spdx/v2/spdxexp"
 
 	"github.com/mariusbertram/hullcheck/pkg/config"
+	"github.com/mariusbertram/hullcheck/pkg/harbor"
 	"github.com/mariusbertram/hullcheck/pkg/jobs"
 )
 
@@ -233,6 +234,7 @@ func (r *Runner) RunScan(job *jobs.Job, regAuth map[string]string) {
 					s.Grype = grypeSum
 				})
 			}
+			r.precomputeHarborVulnReport(job, grypePath)
 		}
 	}()
 
@@ -282,6 +284,18 @@ func (r *Runner) runSyft(ctx context.Context, job *jobs.Job, regOpts image.Regis
 	if err != nil {
 		return nil, nil, fail("GetSource error: %v", err)
 	}
+	// src holds the image content stereoscope pulled to disk (TMPDIR - the
+	// PVC by default, see main.go) so syft can catalog it; nothing
+	// downstream (grype matching, the license summary) touches it again
+	// once CreateSBOM returns below, so it must be closed - which deletes
+	// that extracted content - as soon as this function is done with it,
+	// on every return path, or each scan leaks a whole image's worth of
+	// extracted layers on disk forever.
+	defer func() {
+		if closeErr := src.Close(); closeErr != nil {
+			r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("failed to clean up scan artifacts: %v", closeErr))
+		}
+	}()
 
 	sbomConfig := syft.DefaultCreateSBOMConfig()
 	if r.golangSearchRemoteLicenses {
@@ -407,6 +421,35 @@ func (r *Runner) runGrype(ctx context.Context, job *jobs.Job, sbomJSON []byte, o
 	r.jobsMgr.AppendLog(job.ID, tool, "info", fmt.Sprintf("found %d vulnerability matches", matches.Count()))
 	r.jobsMgr.SetToolStatus(job.ID, tool, "success", &exitCode)
 	return true
+}
+
+// precomputeHarborVulnReport eagerly builds and persists the Harbor
+// Pluggable Scanner Adapter's vulnerability report shape (pkg/harbor.GetReport)
+// right after grype succeeds, instead of leaving that transformation to run
+// synchronously inside the first GetReport request after the scan
+// completes. Harbor starts polling GetReport immediately after submitting a
+// scan and gives up on a single call after a short timeout; for an image
+// with a CVE-heavy grype.json (tens of MB isn't unusual for something like
+// an OpenShift/RHCOS release image), unmarshaling + rebuilding +
+// re-marshaling it synchronously on the very first poll after completion is
+// slow enough to blow through that timeout. Best-effort: a failure here
+// just means GetReport falls back to building it itself on first request.
+func (r *Runner) precomputeHarborVulnReport(job *jobs.Job, grypePath string) {
+	tool := "grype"
+	data, err := os.ReadFile(grypePath)
+	if err != nil {
+		r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("failed to precompute Harbor vulnerability report: %v", err))
+		return
+	}
+	reportJSON, err := harbor.EncodeVulnerabilityReport(job.Image, time.Now(), data)
+	if err != nil {
+		r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("failed to precompute Harbor vulnerability report: %v", err))
+		return
+	}
+	outPath := r.jobsMgr.ArtifactPath(job.ID, harbor.HarborVulnReportArtifact)
+	if err := os.WriteFile(outPath, reportJSON, 0644); err != nil {
+		r.jobsMgr.AppendLog(job.ID, tool, "stderr", fmt.Sprintf("failed to write Harbor vulnerability report: %v", err))
+	}
 }
 
 type licensedPackage struct {

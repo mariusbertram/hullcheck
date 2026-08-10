@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,8 +32,79 @@ const drainDelay = 5 * time.Second
 // regardless of what happens here.
 const shutdownTimeout = 30 * time.Minute
 
+// staleTempDirAge is how old an orphaned scan temp directory (see
+// setupScanTempDir) has to be before a fresh process startup removes it.
+// It's set well above any realistic single scan's duration (bounded by
+// ~2x TOOL_TIMEOUT_MS, ~30m by default) so a directory still in active use
+// by a live scan - on this pod or a sibling sharing the same PVC - is never
+// touched; only directories left behind by a hard-killed process (OOMKill,
+// SIGKILL past terminationGracePeriodSeconds) ever get old enough to match.
+const staleTempDirAge = 2 * time.Hour
+
 //go:embed public/*
 var staticEmbed embed.FS
+
+// setupScanTempDir points TMPDIR at a directory under the PVC (dataDir)
+// instead of the container's local/ephemeral root filesystem, and sweeps
+// anything left over from a previous, crashed instance of this pod.
+//
+// syft's image pulling (via stereoscope, see pkg/scanner) and the VEX
+// attestation lookup (pkg/scanner/vex.go) both extract a full copy of the
+// scanned image's layers to os.TempDir() (== os.MkdirTemp("", ...), which
+// honors $TMPDIR) while cataloging it, then delete it once the scan is
+// done. Left pointed at the default /tmp, that's part of the container's
+// own writable filesystem rather than the PVC - not shared across pods,
+// not visible/manageable the way scan artifacts under DATA_DIR are, and
+// prone to showing up as ballooning pod memory/page-cache usage over many
+// scans since nothing ever evicts it the way a real ephemeral-storage
+// volume would. Only set it if the operator hasn't already configured
+// TMPDIR themselves (e.g. to a faster node-local disk).
+func setupScanTempDir(dataDir string) {
+	if os.Getenv("TMPDIR") != "" {
+		return
+	}
+	tmpDir := filepath.Join(dataDir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		log.Fatalf("Failed to create scan temp directory %s: %v", tmpDir, err)
+	}
+	if err := os.Setenv("TMPDIR", tmpDir); err != nil {
+		log.Fatalf("Failed to set TMPDIR: %v", err)
+	}
+	go cleanupStaleTempDirs(tmpDir)
+}
+
+// cleanupStaleTempDirs removes scan temp directories older than
+// staleTempDirAge from a previous, crashed instance of this pod. Normal
+// scans clean up after themselves (see pkg/scanner); this only catches the
+// case a scan's own deferred cleanup never got to run at all (the process
+// was SIGKILLed) - which matters now that TMPDIR lives on the PVC and no
+// longer gets wiped for free by the container runtime on pod restart.
+func cleanupStaleTempDirs(tmpDir string) {
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleTempDirAge)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "stereoscope-") && !strings.HasPrefix(name, "hullcheck-vex-") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		path := filepath.Join(tmpDir, name)
+		if err := os.RemoveAll(path); err != nil {
+			log.Printf("startup: failed to remove stale scan temp dir %s: %v", path, err)
+		} else {
+			log.Printf("startup: removed stale scan temp dir %s (orphaned by a previous crash)", path)
+		}
+	}
+}
 
 func main() {
 	port := os.Getenv("PORT")
@@ -47,6 +120,7 @@ func main() {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory %s: %v", dataDir, err)
 	}
+	setupScanTempDir(dataDir)
 
 	cfgMgr, err := config.NewManager(dataDir)
 	if err != nil {
