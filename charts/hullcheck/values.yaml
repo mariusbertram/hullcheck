@@ -62,13 +62,22 @@ securityContext:
   readOnlyRootFilesystem: false
 
 # Set to true (together with readOnlyRootFilesystem: true above) if your
-# PodSecurityPolicy/PSA profile requires a read-only root filesystem - the
-# scanners need a writable /tmp for per-scan credentials and staging files.
+# PodSecurityPolicy/PSA profile requires a read-only root filesystem - some
+# Go runtime/library internals still expect a writable /tmp regardless of
+# TMPDIR. Registry credentials are never written to disk anywhere (see
+# README's Security notes), and image-extraction staging files land on the
+# PVC (TMPDIR defaults to DATA_DIR/tmp, see README's Configuration section)
+# rather than here - this is a narrower defensive fallback, not where scan
+# data actually lives.
 extraEmptyDirTmp: false
 
 persistence:
-  # Stores scan history/artifacts (SBOMs, vulnerability & license reports)
-  # and the saved proxy/registry configuration across pod restarts.
+  # Stores scan history/artifacts (SBOMs, vulnerability & license reports),
+  # the saved proxy/registry configuration, and the queue/ + tmp/
+  # directories across pod restarts. tmp/ is scratch space for extracting
+  # each image being scanned - sized to at least the largest image's
+  # uncompressed layers, not just its compressed pull size - and is cleaned
+  # up as each scan finishes; size accordingly for the images you scan.
   enabled: true
   # existingClaim: ""
   storageClassName: ""
