@@ -9,7 +9,7 @@ require (
 	github.com/anchore/stereoscope v0.3.1
 	github.com/anchore/syft v1.51.1
 	github.com/github/go-spdx/v2 v2.7.0
-	github.com/google/go-containerregistry v0.21.9
+	github.com/google/go-containerregistry v0.22.1
 	github.com/google/uuid v1.6.0
 )
 
