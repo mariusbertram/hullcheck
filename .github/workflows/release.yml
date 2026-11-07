@@ -82,7 +82,7 @@ jobs:
       # Keyless (OIDC) signing/attestation — no signing key to manage or leak.
       # No floating major-version tag (unlike most actions) - only exact
       # vX.Y.Z releases exist, so this must be pinned to a real one.
-      - uses: sigstore/cosign-installer@v4.1.2
+      - uses: sigstore/cosign-installer@v4.1.3
 
       - uses: docker/metadata-action@v6
         id: meta
