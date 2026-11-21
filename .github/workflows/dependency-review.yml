@@ -22,6 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # No floating major-version tag - only exact vX.Y.Z releases exist.
-      - uses: actions/dependency-review-action@v5.0.0
+      - uses: actions/dependency-review-action@v5.0.1
         with:
           comment-summary-in-pr: always
